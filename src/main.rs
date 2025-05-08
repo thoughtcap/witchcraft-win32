@@ -156,7 +156,7 @@ fn compute_sha256<P: AsRef<Path>>(path: P) -> Result<String, Box<dyn std::error:
 
 fn register_documents(db: &DB, dirname: &str) -> Result<()> {
     ScanDir::files().read(dirname, |iter| {
-        for (entry, name) in iter {
+        for (entry, _name) in iter {
             let path = entry.path();
             let filename = path.to_str().unwrap();
             let hash = compute_sha256(path.clone()).unwrap();
@@ -177,10 +177,13 @@ struct Document {
 fn gather_embeddings(query: &mut Query, model: t5::T5EncoderModel, tokenizer: Tokenizer) -> Result<Tensor> {
 
     let mut doc_embedding = vec![];
-    for document in query.iter()? {
-        let path = PathBuf::from(document?.filename);
-        //let filename = document?.filename;
-        //println!("read file {}", filename);
+    for document_iter in query.iter()? {
+
+        let document = document_iter?;
+        let filename = document.filename;
+        let _hash = document.hash;
+
+        let path = PathBuf::from(filename);
         println!("read file {:?}", path);
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
