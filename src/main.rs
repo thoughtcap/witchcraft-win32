@@ -182,11 +182,6 @@ struct Document {
     hash: String,
 }
 
-struct Chunk {
-    //hash: String,
-    embedding: Vec<u8>,
-}
-
 struct Embedder {
     tokenizer: Tokenizer,
     model: t5::T5EncoderModel,
@@ -299,14 +294,16 @@ impl DB {
     }
 
     fn make_query(self: &Self) -> SQLResult<Query> {
-        let stmt = self.connection.prepare("SELECT filename, state, hash FROM document WHERE state = 'new'")?;
+        let stmt = self.connection.prepare("SELECT filename,state,hash FROM document WHERE state = 'new'
+            ORDER BY hash")?;
         Ok(Query { stmt })
     }
 
     fn make_kmeans_query(self: &Self) -> SQLResult<Query> {
-        let stmt = self.connection.prepare("SELECT chunk.embedding FROM document,chunk
+        let stmt = self.connection.prepare("SELECT document.filename,chunk.embedding FROM document,chunk
             WHERE document.hash == chunk.hash AND
-            state = 'indexed'")?;
+            state = 'indexed'
+            ORDER BY chunk.hash")?;
         Ok(Query { stmt })
     }
 
@@ -334,11 +331,12 @@ impl<'connection> Query<'connection> {
         })
     }
 
-    fn iter2(&mut self) -> SQLResult<impl Iterator<Item = SQLResult<Chunk>> + '_> {
+    fn iter2(&mut self) -> SQLResult<impl Iterator<Item = SQLResult<(String, Vec<u8>)>> + '_> {
         self.stmt.query_map([], |row| {
-            Ok(Chunk {
-                embedding: row.get(0)?,
-            })
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+            ))
         })
     }
 }
@@ -389,8 +387,9 @@ fn main() -> Result<()> {
     }
 
     let mut all_embeddings = vec![];
-    for chunk in kmeans_query.iter2()? {
-        let t = u8_to_tensor2d_f32(&chunk?.embedding, 128);
+    for result in kmeans_query.iter2()? {
+        let (_filename, embedding) = result?;
+        let t = u8_to_tensor2d_f32(&embedding, 128);
         let split = split_tensor(&t);
         all_embeddings.extend(split);
         //println!("iter len {}", chunk?.embedding.len());
