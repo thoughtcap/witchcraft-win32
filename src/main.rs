@@ -70,10 +70,9 @@ fn cdist(x1: &Tensor, x2: &Tensor) -> Result<Tensor> {
 }
 
 fn kmeans(data: &Tensor, k: usize, max_iter: u32, device: &Device) -> Result<(Tensor, Tensor)> {
-    println!("kmeans {}", data);
     let (n, _) = data.dims2()?;
-    println!("kmeans {}", n);
-    let mut rng = rand::rng();
+    //let mut rng = rand::rng();
+    let mut rng = SmallRng::seed_from_u64(0);
     let mut indices = (0..n).collect::<Vec<_>>();
     indices.shuffle(&mut rng);
 
@@ -86,8 +85,7 @@ fn kmeans(data: &Tensor, k: usize, max_iter: u32, device: &Device) -> Result<(Te
     let centroid_idx_tensor = Tensor::from_slice(centroid_idx.as_slice(), (k,), device)?;
     let mut centers = data.index_select(&centroid_idx_tensor, 0)?;
     let mut cluster_assignments = Tensor::zeros((n,), DType::U32, device)?;
-    for i in 0..max_iter {
-        println!("i {}", i);
+    for _ in 0..max_iter {
         //let dist = cdist(data, &centers)?;
         let sim = data.matmul(&centers.transpose(D::Minus1, D::Minus2)?)?;
         cluster_assignments = sim.argmax(D::Minus1)?;
