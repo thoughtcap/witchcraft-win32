@@ -113,7 +113,12 @@ fn kmeans(data: &Tensor, k: usize, max_iter: u32, device: &Device) -> Result<(Te
     Ok((centers, cluster_assignments))
 }
 
-fn write_clusters(db: &DB, data: &Tensor, centers: &Tensor, device: &Device) -> Result<()> {
+fn write_buckets(db: &DB,
+        data: &Tensor,
+        document_indices: &Tensor,
+        centers: &Tensor,
+        device: &Device) -> Result<()> {
+
     let (k, _) = centers.dims2()?;
     println!("k={}", k);
 
@@ -138,7 +143,8 @@ fn write_clusters(db: &DB, data: &Tensor, centers: &Tensor, device: &Device) -> 
         let center_bytes = vec_f32_to_u8_vec(&vec?);
 
         println!("indices vec {}", data_indices);
-        let vec = data_indices.to_vec1::<u32>();
+        let document_subset = document_indices.index_select(&data_indices, 0)?;
+        let vec = document_subset.to_vec1::<u32>();
         let indices_bytes = vec_u32_to_u8_vec(&vec?);
 
         let vec = cluster_data.to_vec2::<f32>();
@@ -150,12 +156,21 @@ fn write_clusters(db: &DB, data: &Tensor, centers: &Tensor, device: &Device) -> 
 }
 
 fn match_centroids(bucket_query: &mut Query, query_embeddings: &Tensor, centers: &Tensor) -> Result<()> {
-    println!("match em");
+    println!("******************** LOOKUP **********************\n");
     let sim = query_embeddings.matmul(&centers.transpose(D::Minus1, D::Minus2)?).unwrap();
-    println!("shape {:?}", sim.dims2()?);
+    println!("query {:?} centers {:?} sim dim {:?}",
+        query_embeddings.dims2()?,
+        centers.dims2()?,
+        sim.dims2()?);
+
     let cluster_assignments = sim.argmax(D::Minus1)?;
-    println!("got centroids {}", cluster_assignments);
-    for i in cluster_assignments.to_vec1::<u32>()? {
+    println!("clusters {}", cluster_assignments);
+
+    let mut cluster_assignments = cluster_assignments.to_vec1::<u32>()?;
+    cluster_assignments.sort();
+    cluster_assignments.dedup();
+
+    for i in cluster_assignments {
 
         for result in bucket_query.iter3(i)? {
             let (indices, embeddings) = result?;
@@ -510,7 +525,7 @@ pub fn u8_to_tensor2d_u32_1d(bytes: &[u8]) -> Tensor {
         u32s.push(u32::from_ne_bytes(arr));
     }
 
-    Tensor::from_vec(u32s, (total_u32s), &Device::Cpu).unwrap()
+    Tensor::from_vec(u32s, total_u32s, &Device::Cpu).unwrap()
 }
 
 fn main() -> Result<()> {
@@ -536,10 +551,12 @@ fn main() -> Result<()> {
         db.set_embeddings(&hash, &bytes).unwrap();
     }
 
+    let mut document_indices = Vec::<u32>::new();
     if args.len() == 2 && args[1] == "index" {
         let mut all_filenames : Vec<String> = Vec::new();
         let mut all_embeddings = vec![];
-        for result in kmeans_query.iter2()? {
+        let mut total = 0;
+        for (document_idx, result) in kmeans_query.iter2()?.enumerate() {
             let (filename, embedding) = result?;
             println!("filename {} start at {}", filename, all_embeddings.len());
             all_filenames.push(filename);
@@ -547,6 +564,12 @@ fn main() -> Result<()> {
             let split = split_tensor(&t);
             all_embeddings.extend(split);
             //println!("iter len {}", chunk?.embedding.len());
+            let (m, n) = t.dims2()?;
+            println!("shape is {}x{}", m, n);
+            for _ in 0..m {
+                document_indices.push(document_idx as u32);
+            }
+            total += m;
         }
         let matrix = stack_tensors(all_embeddings);
         println!("kmeans...");
@@ -558,8 +581,9 @@ fn main() -> Result<()> {
         println!("idxs {}", idxs);
 
         println!("write buckets...");
+        let document_indices = Tensor::from_vec(document_indices, total, &Device::Cpu).unwrap();
         let now = std::time::Instant::now();
-        write_clusters(&db, &matrix, &centers, &device).unwrap();
+        write_buckets(&db, &matrix, &document_indices, &centers, &device).unwrap();
         println!("write buckets took {} ms.", now.elapsed().as_millis());
     }
 
