@@ -359,11 +359,10 @@ impl DB {
 
         println!("init");
         let query = "CREATE TABLE IF NOT EXISTS document(filename TEXT PRIMARY KEY,
-            state TEXT CHECK(state IN ('new', 'indexed')),
-            hash TEXT)";
+            hash TEXT NOT NULL)";
         connection.execute(query, ()).unwrap();
 
-        let query = "CREATE TABLE IF NOT EXISTS chunk(hash TEXT PRIMARY KEY, embedding BLOB NOT NULL)";
+        let query = "CREATE TABLE IF NOT EXISTS chunk(hash TEXT PRIMARY KEY NOT NULL, embedding BLOB NOT NULL)";
         connection.execute(query, ()).unwrap();
 
         let query = "CREATE TABLE IF NOT EXISTS bucket(id INTEGER PRIMARY KEY,
@@ -373,15 +372,17 @@ impl DB {
     }
 
     fn make_query(self: &Self) -> SQLResult<Query> {
-        let stmt = self.connection.prepare("SELECT filename,hash FROM document WHERE state = 'new'
+        let stmt = self.connection.prepare("SELECT document.filename,document.hash
+            FROM document
+            LEFT JOIN chunk ON document.hash = chunk.hash
+            WHERE chunk.hash IS NULL
             ORDER BY filename")?;
         Ok(Query { stmt })
     }
 
     fn make_kmeans_query(self: &Self) -> SQLResult<Query> {
         let stmt = self.connection.prepare("SELECT document.filename,chunk.embedding FROM document,chunk
-            WHERE document.hash == chunk.hash AND
-            state = 'indexed'
+            WHERE document.hash == chunk.hash
             ORDER BY document.filename")?;
         Ok(Query { stmt })
     }
@@ -398,15 +399,13 @@ impl DB {
     }
 
     fn add_doc(self: &Self, filename: &str, hash: &str) -> SQLResult<()> {
-        self.connection.execute("INSERT OR IGNORE INTO document VALUES(?1, 'new', ?2)", (&filename, &hash))?;
+        self.connection.execute("INSERT OR IGNORE INTO document VALUES(?1, ?2)", (&filename, &hash))?;
         Ok(())
     }
 
     fn set_embeddings(self: &Self, hash: &str, embeddings: &Vec<u8>) -> SQLResult<()> {
-        let tx = self.connection.unchecked_transaction()?;
-        tx.execute("INSERT OR REPLACE INTO chunk VALUES(?1, ?2)", (&hash, embeddings)).unwrap();
-        tx.execute("UPDATE document set state = 'indexed' WHERE hash == ?1", (&hash, )).unwrap();
-        tx.commit()
+        self.connection.execute("INSERT OR REPLACE INTO chunk VALUES(?1, ?2)", (&hash, embeddings)).unwrap();
+        Ok(())
     }
 
     fn add_bucket(self: &Self, id: u32, center: &Vec<u8>, indices: &Vec<u8>, embeddings: &Vec<u8>) -> SQLResult<()> {
@@ -472,16 +471,6 @@ fn vec_u32_to_u8_vec(data: &Vec<u32>) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(data.len() * data.len() * std::mem::size_of::<u32>());
     for &val in data {
         bytes.extend_from_slice(&val.to_ne_bytes()); // native-endian encoding
-    }
-    bytes
-}
-
-fn vecvec_u32_to_u8_vec(data: &[Vec<u32>]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(data.len() * data[0].len() * std::mem::size_of::<u32>());
-    for row in data {
-        for &val in row {
-            bytes.extend_from_slice(&val.to_ne_bytes()); // native-endian encoding
-        }
     }
     bytes
 }
@@ -577,14 +566,11 @@ fn main() -> Result<()> {
         let mut all_embeddings = vec![];
         let mut total = 0;
         for (document_idx, result) in kmeans_query.iter2()?.enumerate() {
-            let (filename, embedding) = result?;
-            println!("filename {} start at {}", filename, all_embeddings.len());
+            let (_filename, embedding) = result?;
             let t = u8_to_tensor2d_f32(&embedding, 128);
             let split = split_tensor(&t);
             all_embeddings.extend(split);
-            //println!("iter len {}", chunk?.embedding.len());
-            let (m, n) = t.dims2()?;
-            println!("shape is {}x{}", m, n);
+            let (m, _n) = t.dims2()?;
             for _ in 0..m {
                 document_indices.push(document_idx as u32);
             }
@@ -593,7 +579,6 @@ fn main() -> Result<()> {
         let matrix = stack_tensors(all_embeddings);
         println!("kmeans...");
         let now = std::time::Instant::now();
-        //let (centers, idxs) = kmeans(&matrix, 1024, 5, &device)?;
         let k = 6;
         let (centers, idxs) = kmeans(&matrix, k, 5, &device)?;
         println!("kmeans took {} ms.", now.elapsed().as_millis());
