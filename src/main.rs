@@ -9,6 +9,7 @@ use std::io::{BufReader, Read};
 use std::mem::size_of;
 use std::path::Path;
 use std::path::PathBuf;
+use indicatif::ProgressBar;
 
 mod t5;
 
@@ -52,7 +53,7 @@ impl T5ModelBuilder {
 
 }
 
-fn kmeans(data: &Tensor, k: usize, max_iter: u32, device: &Device) -> Result<(Tensor, Tensor)> {
+fn kmeans(data: &Tensor, k: usize, max_iter: usize, device: &Device) -> Result<(Tensor, Tensor)> {
     let (n, _) = data.dims2()?;
     //let mut rng = rand::rng();
     let mut rng = SmallRng::seed_from_u64(0);
@@ -68,6 +69,8 @@ fn kmeans(data: &Tensor, k: usize, max_iter: u32, device: &Device) -> Result<(Te
     let centroid_idx_tensor = Tensor::from_slice(centroid_idx.as_slice(), (k,), device)?;
     let mut centers = data.index_select(&centroid_idx_tensor, 0)?;
     let mut cluster_assignments = Tensor::zeros((n,), DType::U32, device)?;
+    let total : u64 = (max_iter * k).try_into().unwrap();
+    let bar = ProgressBar::new(total);
     for _ in 0..max_iter {
         //let dist = cdist(data, &centers)?;
         let sim = data.matmul(&centers.transpose(D::Minus1, D::Minus2)?)?;
@@ -89,9 +92,11 @@ fn kmeans(data: &Tensor, k: usize, max_iter: u32, device: &Device) -> Result<(Te
             let sum = cluster_data.sum(0)?;
             let normalized = sum.broadcast_div(&sum.sqr()?.sum_keepdim(0)?.sqrt()?);
             centers_vec.push(normalized?);
+            bar.inc(1);
         }
         centers = Tensor::stack(centers_vec.as_slice(), 0)?;
     }
+    bar.finish();
     Ok((centers, cluster_assignments))
 }
 
@@ -104,8 +109,11 @@ fn write_buckets(db: &DB,
     let (k, _) = centers.dims2()?;
     println!("k={}", k);
 
+    let bar = ProgressBar::new(k as u64 + 2);
     let sim = data.matmul(&centers.transpose(D::Minus1, D::Minus2)?)?;
+    bar.inc(1);
     let cluster_assignments = sim.argmax(D::Minus1)?;
+    bar.inc(1);
     for i in 0..k {
         let center = centers.get(i)?;
         let mut indices = vec![];
@@ -132,7 +140,9 @@ fn write_buckets(db: &DB,
         let embeddings_bytes = vec_f32_to_u8_vec(&vec);
 
         db.add_bucket(i as u32, &center_bytes, &indices_bytes, &embeddings_bytes).unwrap();
+        bar.inc(1);
     }
+    bar.finish();
     Ok(())
 }
 
