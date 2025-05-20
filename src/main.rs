@@ -10,7 +10,6 @@ use std::mem::size_of;
 use std::path::Path;
 use std::path::PathBuf;
 
-//use candle_transformers::models::t5;
 mod t5;
 
 use anyhow::{Error as E, Result};
