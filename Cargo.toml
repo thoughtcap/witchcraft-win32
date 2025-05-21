@@ -4,11 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+accelerate-src = { version = "0.3.2", optional = true }
+candle-metal-kernels = { version = "0.9.1", optional = true }
+metal = { version = "0.27.0", features = ["mps"], optional = true }
+ug-metal = { version = "0.4.0", optional = true }
+libc = { version = "0.2.147", optional = true }
 anyhow = "*"
 serde = "*"
 serde_json = "*"
-candle-core = "*"
-candle-nn = "*"
+candle-core = { version = "*", features = ["metal"] }
+candle-nn = { version = "*", features = ["metal"] }
 candle-transformers = "*"
 tokenizers = "*"
 tracing = "*"
@@ -19,6 +24,10 @@ rusqlite = "0.35.0"
 sha2 = "0.10.9"
 min-heap = "1.0.0"
 indicatif = "0.17.11"
+
+[features]
+accelerate = ["dep:libc", "dep:accelerate-src"]
+metal = ["dep:metal", "dep:candle-metal-kernels", "dep:ug-metal"]
 
 #[dependencies.rusqlite]
 #version = "0.35.0"

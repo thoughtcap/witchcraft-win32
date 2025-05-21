@@ -28,7 +28,7 @@ struct T5ModelBuilder {
 
 impl T5ModelBuilder {
     pub fn load() -> Result<(Self, Tokenizer)> {
-        let device = Device::Cpu;
+        let device = Device::new_metal(0)?;
         let path = PathBuf::from(r"/Users/jhansen/src/xtr-warp/foo.safetensors");
         let weights_filename = vec![path];
         let config = std::fs::read_to_string("/Users/jhansen/src/xtr-warp/xtr-base-en/config.json")?;
@@ -56,22 +56,19 @@ impl T5ModelBuilder {
 fn kmeans(data: &Tensor, k: usize, max_iter: usize, device: &Device) -> Result<(Tensor, Tensor)> {
     println!("kmeans...");
     let (n, _) = data.dims2()?;
-    //let mut rng = rand::rng();
-    let mut rng = SmallRng::seed_from_u64(0);
-    let mut indices = (0..n).collect::<Vec<_>>();
-    indices.shuffle(&mut rng);
 
-    let centroid_idx = indices[..k]
-        .iter()
-        .copied()
-        .map(|x| x as u32)
-        .collect::<Vec<_>>();
-
-    let centroid_idx_tensor = Tensor::from_slice(centroid_idx.as_slice(), (k,), device)?;
-    let mut centers = data.index_select(&centroid_idx_tensor, 0)?;
-    let mut cluster_assignments = Tensor::zeros((n,), DType::U32, device)?;
     let total : u64 = (max_iter * k).try_into().unwrap();
     let bar = ProgressBar::new(total);
+
+    let mut rng = SmallRng::seed_from_u64(0);
+    let centroid_idx = rand::seq::index::sample(&mut rng, n, k).into_vec();
+    let centroid_idx: Vec<u32> = centroid_idx.iter().map(|&i| i as u32).collect();
+
+    let centroid_idx_tensor = Tensor::from_slice(centroid_idx.as_slice(), (k,), device)?;
+    let centroid_idx_tensor = centroid_idx_tensor.to_device(data.device())?;
+    let mut centers = data.index_select(&centroid_idx_tensor, 0)?;
+    let mut cluster_assignments = Tensor::zeros((n,), DType::U32, device)?;
+
     for _ in 0..max_iter {
         //let dist = cdist(data, &centers)?;
         let sim = data.matmul(&centers.transpose(D::Minus1, D::Minus2)?)?;
@@ -89,6 +86,7 @@ fn kmeans(data: &Tensor, k: usize, max_iter: usize, device: &Device) -> Result<(
                     }
                 });
             let indices = Tensor::from_slice(indices.as_slice(), (indices.len(),), device)?;
+            let indices = indices.to_device(data.device())?;
             let cluster_data = data.index_select(&indices, 0)?;
             let sum = cluster_data.sum(0)?;
             let normalized = sum.broadcast_div(&sum.sqr()?.sum_keepdim(0)?.sqrt()?);
@@ -128,6 +126,7 @@ fn write_buckets(db: &DB,
                 }
             });
         let data_indices = Tensor::from_slice(indices.as_slice(), (indices.len(),), device)?;
+        let data_indices = data_indices.to_device(data.device())?;
         let cluster_data = data.index_select(&data_indices, 0)?;
 
         let vec = center.to_vec1::<f32>().unwrap();
@@ -160,6 +159,7 @@ fn match_centroids(
 
     let sizes = bucket_sizes_query.u32_vec()?;
 
+    let centers = centers.to_device(query_embeddings.device())?;
     let query_centroid_similarity = query_embeddings.matmul(&centers.transpose(D::Minus1, D::Minus2)?).unwrap();
 
     let sorted_indices = query_centroid_similarity.arg_sort_last_dim(false)?;
@@ -206,7 +206,10 @@ fn match_centroids(
     }
 
     let all_document_embeddings = Tensor::stack(all_document_embeddings.as_slice(), 1)?;
+    let all_document_embeddings = all_document_embeddings.to_device(query_embeddings.device())?;
+
     let sim = query_embeddings.matmul(&all_document_embeddings)?.transpose(0, 1)?;
+    let sim = sim.to_device(&Device::Cpu)?;
 
     let mut last = std::u32::MAX;
     let mut current = Tensor::zeros((n,), DType::F32, &Device::Cpu)?;
@@ -265,10 +268,6 @@ fn split_tensor(tensor: &Tensor) -> Vec<Tensor> {
         })
 
         .collect()
-}
-
-fn stack_tensors(vectors: Vec<Tensor>) -> Tensor {
-    Tensor::cat(&vectors, 0).unwrap() // `0` means stacking along rows (axis 0)
 }
 
 fn compute_sha256<P: AsRef<Path>>(path: P) -> Result<String, Box<dyn std::error::Error>> {
@@ -370,12 +369,12 @@ impl<'a> Iterator for Gatherer<'a> {
             Some((hash, body)) => {
 
                 let now = std::time::Instant::now();
-                let embeddings = self.embedder.embed(&body);
+                let embeddings = self.embedder.embed(&body).unwrap();
                 println!("embedder took {} ms.", now.elapsed().as_millis());
 
-                let split = split_tensor(&embeddings.ok()?.get(0).ok()?);
+                let split = split_tensor(&embeddings.get(0).ok()?);
                 doc_embedding.extend(split);
-                Some((hash, stack_tensors(doc_embedding)))
+                Some((hash, Tensor::cat(&doc_embedding, 0).unwrap()))
             }
             None => {
                 None
@@ -604,7 +603,8 @@ fn usage(arg0: &String) {
 
 fn main() -> Result<()> {
 
-    let device = Device::Cpu;
+    //let device = Device::Cpu;
+    let device = Device::new_metal(0)?;
     let embedder = Embedder::new();
 
     let db = DB::new();
@@ -627,6 +627,7 @@ fn main() -> Result<()> {
         let mut document_indices = Vec::<u32>::new();
         let mut all_embeddings = vec![];
         let mut total = 0;
+        println!("read embeddings...");
         for result in kmeans_query.iter2()? {
             let (id, _filename, _hash, embedding) = result?;
             //println!("id={} filename={}", id, _filename);
@@ -639,7 +640,7 @@ fn main() -> Result<()> {
             }
             total += m;
         }
-        let matrix = stack_tensors(all_embeddings);
+        let matrix = Tensor::cat(&all_embeddings, 0).unwrap();
         let now = std::time::Instant::now();
         let k = 1024;
         let (centers, idxs) = kmeans(&matrix, k, 5, &device)?;
@@ -668,7 +669,7 @@ fn main() -> Result<()> {
             let split = split_tensor(&t);
             centers.extend(split);
         }
-        let centers = stack_tensors(centers);
+        let centers = Tensor::cat(&centers, 0)?;
 
         let qe = embedder.embed(q)?.get(0)?;
         match_centroids(&mut bucket_sizes_query, &mut bucket_query, &mut body_query, &qe, &centers).unwrap();
