@@ -424,6 +424,10 @@ impl DB {
         let query = "CREATE TABLE IF NOT EXISTS bucket(id INTEGER PRIMARY KEY,
             center BLOB NOT NULL, indices BLOB NOT NULL, residuals BLOB NOT NULL)";
         connection.execute(query, ()).unwrap();
+
+        let query = "CREATE INDEX IF NOT EXISTS bucket_index ON bucket(id)";
+        connection.execute(query, ()).unwrap();
+
         Self { connection }
     }
 
