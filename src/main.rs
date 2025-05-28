@@ -5,12 +5,13 @@ use sha2::{Sha256, Digest};
 use min_heap::MinHeap;
 use std::fs;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, BufWriter, Write};
 use std::mem::size_of;
 use std::path::Path;
 use std::path::PathBuf;
 use indicatif::ProgressBar;
-
+use csv;
+use serde::Deserialize;
 mod t5;
 
 mod packops;
@@ -150,7 +151,7 @@ fn match_centroids(
         body_query: &mut Query,
         query_embeddings: &Tensor,
         centers: &Tensor,
-        report: bool) -> Result<()> {
+        report: bool) -> Result<Vec<String>> {
     let now = std::time::Instant::now();
 
     let k = 32;
@@ -259,6 +260,7 @@ fn match_centroids(
     println!("scoring clusters took {} ms.", now.elapsed().as_millis());
     println!("");
 
+    let mut filenames = vec![];
     let mut results = vec![];
     while let Some((score, idx)) = heap2.pop() {
         results.push((score, idx));
@@ -266,16 +268,20 @@ fn match_centroids(
     results.reverse();
 
     for (score_as_u32, idx) in results {
-        let body = body_query.point4(idx)?;
+        let (filename, body) = body_query.point4(idx)?;
 
         if report {
             println!("================= score:{} ============", (score_as_u32 as f32) / 1000.0);
             println!("{}", body);
             println!("");
         }
-    }
 
-    Ok(())
+        filenames.push(filename);
+
+    }
+    println!("filenames {:?}", filenames);
+
+    Ok(filenames)
 }
 
 fn split_tensor(tensor: &Tensor) -> Vec<Tensor> {
@@ -315,7 +321,7 @@ fn compute_sha256<P: AsRef<Path>>(path: P) -> Result<String, Box<dyn std::error:
 }
 
 
-fn register_documents(db: &DB, dirname: &str) -> Result<()> {
+fn scan_documents_dir(db: &DB, dirname: &str) -> Result<()> {
 
     println!("register documents...");
     let mut entries: Vec<_> = fs::read_dir(dirname)?
@@ -337,6 +343,38 @@ fn register_documents(db: &DB, dirname: &str) -> Result<()> {
         bar.inc(1);
     }
     bar.finish();
+
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct Record {
+    name: String,
+    body: String,
+}
+
+
+fn read_csv(db: &DB, csvname: &str) -> Result<()> {
+
+    println!("register documents from CSV {}...", csvname);
+
+    let file = File::open(csvname)?;
+    let mut rdr = csv::ReaderBuilder::new()
+        .delimiter(b'\t')
+        .has_headers(false)
+        .from_reader(file);
+
+    for result in rdr.deserialize() {
+        let record: Record = result?;
+        let filename = record.name;
+        let body = record.body;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&body);
+        let hash = format!("{:x}", hasher.finalize());
+        println!("add {} {} {}", filename, body, hash);
+        db.add_doc(&filename, &hash, &body).unwrap();
+    }
 
     Ok(())
 }
@@ -470,7 +508,7 @@ impl DB {
     }
 
     fn make_document_body_query(self: &Self) -> SQLResult<Query> {
-        let stmt = self.connection.prepare("SELECT body FROM document WHERE rowid = ?1")?;
+        let stmt = self.connection.prepare("SELECT filename,body FROM document WHERE rowid = ?1")?;
         Ok(Query { stmt })
     }
 
@@ -530,11 +568,12 @@ impl<'connection> Query<'connection> {
         })
     }
 
-    fn point4(&mut self, id: u32) -> SQLResult<String> {
+    fn point4(&mut self, id: u32) -> SQLResult<(String, String)> {
         self.stmt.query_row([id], |row| {
-            Ok(
+            Ok((
                 row.get(0)?,
-            )
+                row.get(1)?,
+            ))
         })
     }
 
@@ -560,7 +599,7 @@ fn u8_to_vec_u32(bytes: &[u8]) -> Vec<u32> {
 }
 
 fn usage(arg0: &String) {
-    eprintln!("Usage: {} index | query <text>", arg0);
+    eprintln!("Usage: {} scan | readcsv <file> | index | query <text> | querycsv <file> <results-file>", arg0);
     std::process::exit(1)
 }
 
@@ -574,10 +613,22 @@ fn main() -> Result<()> {
     let mut query = db.make_query().unwrap();
     let mut kmeans_query = db.make_kmeans_query().unwrap();
 
-    let args: Vec<String> = env::args().collect();
-    if args.len() == 2 && args[1] == "index" {
+    let mut center_query = db.make_bucket_center_query().unwrap();
+    let mut bucket_sizes_query = db.make_bucket_sizes_query().unwrap();
+    let mut bucket_query = db.make_bucket_residuals_query().unwrap();
+    let mut body_query = db.make_document_body_query().unwrap();
 
-        register_documents(&db, "documents").unwrap();
+
+    let args: Vec<String> = env::args().collect();
+    if args.len() == 3 && args[1] == "scan" {
+
+        scan_documents_dir(&db, &args[2]).unwrap();
+
+    } else if args.len() == 3 && args[1] == "readcsv" {
+
+        read_csv(&db, &args[2]).unwrap();
+
+    } else if args.len() == 2 && &args[1] == "index" {
 
         let embedding_iter = Gatherer::new(&mut query, &embedder);
         for (hash, embeddings) in embedding_iter {
@@ -620,11 +671,6 @@ fn main() -> Result<()> {
         let q = &args[2..].join(" ");
         println!("Looking up: {}", q);
 
-        let mut center_query = db.make_bucket_center_query().unwrap();
-        let mut bucket_sizes_query = db.make_bucket_sizes_query().unwrap();
-        let mut bucket_query = db.make_bucket_residuals_query().unwrap();
-        let mut body_query = db.make_document_body_query().unwrap();
-
         let mut centers = vec![];
         for center in center_query.iter4()? {
             let t = Tensor::from_f32_bytes(&center?, 128, &Device::Cpu)?.flatten_all()?;
@@ -634,6 +680,42 @@ fn main() -> Result<()> {
 
         let qe = embedder.embed(q)?.get(0)?;
         match_centroids(&mut bucket_sizes_query, &mut bucket_query, &mut body_query, &qe, &centers, true).unwrap();
+
+    } else if args.len() >= 4 && args[1] == "querycsv" {
+
+        let mut centers = vec![];
+        for center in center_query.iter4()? {
+            let t = Tensor::from_f32_bytes(&center?, 128, &Device::Cpu)?.flatten_all()?;
+            centers.push(t);
+        }
+        let centers = Tensor::stack(&centers, 0)?;
+
+        let csvname = &args[2];
+        let file = File::open(csvname)?;
+        let mut rdr = csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(false)
+            .from_reader(file);
+
+        let file = File::create(&args[3]).unwrap();
+        let mut writer = BufWriter::new(file);
+
+        for result in rdr.deserialize() {
+            let record: (String, String) = result?;
+            let key = record.0;
+            let question = record.1;
+
+            let qe = embedder.embed(&question)?.get(0)?;
+            let results = match_centroids(&mut bucket_sizes_query, &mut bucket_query, &mut body_query, &qe, &centers, false).unwrap();
+
+            write!(writer, "{}\t", key).unwrap();
+            for s in &results {
+                write!(writer, "{},", s).unwrap();
+            }
+            write!(writer, "\n").unwrap();
+            writer.flush().unwrap();
+        }
+
     } else {
         usage(&args[0]);
     }

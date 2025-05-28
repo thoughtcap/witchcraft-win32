@@ -29,8 +29,7 @@ run:
 For your convenience, nfcorpus.tsv is included, so you can just do this:
 
 ```
-mkdir documents
-python createdocs.py datasets/nfcorpus.tsv
+$ cargo run --release readcsv datasets/nfcorpus.tsv
 ```
 
 With all the documents in place, it is time to create the index:
