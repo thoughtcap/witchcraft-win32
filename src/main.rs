@@ -456,6 +456,7 @@ impl DB {
     pub fn new() -> Self {
         //let connection = Connection::open_in_memory().unwrap();
         let connection = Connection::open("mydb.sqlite").unwrap();
+        connection.pragma_update(None, "synchronous", "OFF").unwrap();
 
         println!("init");
         let query = "CREATE TABLE IF NOT EXISTS document(filename TEXT PRIMARY KEY,
