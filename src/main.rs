@@ -469,9 +469,9 @@ struct Query<'connection> {
 }
 
 impl DB {
-    pub fn new() -> Self {
+    pub fn new(db_fn: &str) -> Self {
         //let connection = Connection::open_in_memory().unwrap();
-        let connection = Connection::open("mydb.sqlite").unwrap();
+        let connection = Connection::open(db_fn).unwrap();
         connection.pragma_update(None, "synchronous", "OFF").unwrap();
 
         println!("init");
@@ -626,7 +626,7 @@ fn main() -> Result<()> {
     let device = Device::new_metal(0)?;
     let embedder = Embedder::new(&device);
 
-    let db = DB::new();
+    let db = DB::new("mydb.sqlite");
     let mut query = db.make_query().unwrap();
     let mut kmeans_query = db.make_kmeans_query().unwrap();
 
