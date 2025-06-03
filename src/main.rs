@@ -1,6 +1,6 @@
 use std::env;
 use rand::prelude::*;
-use rusqlite::{Connection, Statement, Result as SQLResult};
+use rusqlite::{Connection, Statement, Row, Result as SQLResult};
 use sha2::{Sha256, Digest};
 use min_heap::MinHeap;
 use std::fs;
@@ -55,23 +55,22 @@ impl T5ModelBuilder {
 }
 
 fn kmeans(data: &Tensor, k: usize, max_iter: usize, device: &Device) -> Result<(Tensor, Tensor)> {
-    println!("kmeans...");
-    let (n, _) = data.dims2()?;
+    let (m, n) = data.dims2()?;
+    println!("kmeans k={} m={} n={}...", k, m, n);
 
     let total : u64 = (max_iter * k).try_into().unwrap();
     let bar = ProgressBar::new(total);
 
     let mut rng = SmallRng::seed_from_u64(0);
-    let centroid_idx = rand::seq::index::sample(&mut rng, n, k).into_vec();
+    let centroid_idx = rand::seq::index::sample(&mut rng, m, k).into_vec();
     let centroid_idx: Vec<u32> = centroid_idx.iter().map(|&i| i as u32).collect();
 
     let centroid_idx_tensor = Tensor::from_slice(centroid_idx.as_slice(), (k,), device)?;
     let centroid_idx_tensor = centroid_idx_tensor.to_device(data.device())?;
     let mut centers = data.index_select(&centroid_idx_tensor, 0)?;
-    let mut cluster_assignments = Tensor::zeros((n,), DType::U32, device)?;
+    let mut cluster_assignments = Tensor::zeros((m,), DType::U32, device)?;
 
     for _ in 0..max_iter {
-        //let dist = cdist(data, &centers)?;
         let sim = data.matmul(&centers.transpose(D::Minus1, D::Minus2)?)?;
         cluster_assignments = sim.argmax(D::Minus1)?;
         let mut centers_vec = vec![];
@@ -86,12 +85,19 @@ fn kmeans(data: &Tensor, k: usize, max_iter: usize, device: &Device) -> Result<(
                         indices.push(j as u32);
                     }
                 });
-            let indices = Tensor::from_slice(indices.as_slice(), (indices.len(),), device)?;
-            let indices = indices.to_device(data.device())?;
-            let cluster_data = data.index_select(&indices, 0)?;
-            let sum = cluster_data.sum(0)?;
-            let normalized = sum.broadcast_div(&sum.sqr()?.sum_keepdim(0)?.sqrt()?);
-            centers_vec.push(normalized?);
+            if indices.len() > 0 {
+                let indices = Tensor::from_slice(indices.as_slice(), (indices.len(),), device)?;
+                let indices = indices.to_device(data.device())?;
+                let cluster_data = data.index_select(&indices, 0)?;
+                let sum = cluster_data.sum(0)?;
+                let normalized = sum.broadcast_div(&sum.sqr()?.sum_keepdim(0)?.sqrt()?);
+                centers_vec.push(normalized?);
+            } else {
+                let idx = rand::seq::index::sample(&mut rng, m, 1).into_vec()[0];
+                let center = data.get(idx)?;
+                let normalized = center.broadcast_div(&center.sqr()?.sum_keepdim(0)?.sqrt()?);
+                centers_vec.push(normalized?);
+            }
             bar.inc(1);
         }
         centers = Tensor::stack(centers_vec.as_slice(), 0)?;
@@ -127,13 +133,13 @@ fn write_buckets(db: &DB,
                 }
             });
         let data_indices = Tensor::from_slice(indices.as_slice(), (indices.len(),), device)?;
-        let data_indices = data_indices.to_device(data.device())?;
+        let data_indices_cpu = data_indices.to_device(&Device::Cpu)?;
         let cluster_data = data.index_select(&data_indices, 0)?;
 
         let residuals = cluster_data.broadcast_sub(&center).unwrap();
         let center_bytes = center.to_f32_bytes()?;
 
-        let document_subset = document_indices.index_select(&data_indices, 0)?;
+        let document_subset = document_indices.index_select(&data_indices_cpu, 0).unwrap();
         let indices_bytes = document_subset.to_u32_bytes()?;
 
         let residuals_bytes = residuals.compand()?.quantize(4)?.to_q4_bytes()?;
@@ -285,7 +291,13 @@ fn match_centroids(
     results.reverse();
 
     for (score_as_u32, idx) in results {
-        let (filename, body) = body_query.point4(idx)?;
+
+        let (filename, body) = body_query.point((idx,), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+            ))
+        })?;
 
         if report {
             println!("================= score:{} ============", (score_as_u32 as f32) / 1000.0);
@@ -493,6 +505,11 @@ impl DB {
         Self { connection }
     }
 
+    fn query(self: &Self, sql: &str) -> SQLResult<Query> {
+        let stmt = self.connection.prepare(&sql)?;
+        Ok(Query { stmt })
+    }
+
     fn make_query(self: &Self) -> SQLResult<Query> {
         let stmt = self.connection.prepare("SELECT
             document.hash,document.body
@@ -548,22 +565,28 @@ impl DB {
 }
 
 impl<'connection> Query<'connection> {
+
+    fn iter<'stmt, T1, T2, F>(&'stmt mut self, args: T1, map_fn: F) -> SQLResult<impl Iterator<Item = SQLResult<T2>> + 'stmt>
+        where
+            F: FnMut(&Row) -> SQLResult<T2> + 'stmt,
+            T1: rusqlite::Params, {
+        self.stmt.query_map(args, map_fn)
+    }
+
+
+
+    fn point<'stmt, T1, T2, F>(&'stmt mut self, args: T1, map_fn: F) -> SQLResult<T2>
+        where F: FnOnce(&Row) -> SQLResult<T2> + 'stmt, T1: rusqlite::Params,
+    {
+        self.stmt.query_row(args, map_fn)
+    }
+
+
     fn iter1(&mut self) -> SQLResult<impl Iterator<Item = SQLResult<(String, String)>> + '_> {
         self.stmt.query_map([], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
-            ))
-        })
-    }
-
-    fn iter2(&mut self) -> SQLResult<impl Iterator<Item = SQLResult<(u32, String, String, Vec<u8>)>> + '_> {
-        self.stmt.query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
             ))
         })
     }
@@ -578,15 +601,6 @@ impl<'connection> Query<'connection> {
     }
 
     fn point3(&mut self, id: u32) -> SQLResult<(Vec<u8>, Vec<u8>)> {
-        self.stmt.query_row([id], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-            ))
-        })
-    }
-
-    fn point4(&mut self, id: u32) -> SQLResult<(String, String)> {
         self.stmt.query_row([id], |row| {
             Ok((
                 row.get(0)?,
@@ -636,7 +650,6 @@ fn main() -> Result<()> {
     let mut bucket_query = db.make_bucket_residuals_query().unwrap();
     let mut body_query = db.make_document_body_query().unwrap();
 
-
     let args: Vec<String> = env::args().collect();
     if args.len() == 3 && args[1] == "scan" {
 
@@ -648,38 +661,78 @@ fn main() -> Result<()> {
 
     } else if args.len() == 2 && &args[1] == "index" {
 
+/*
         let embedding_iter = Gatherer::new(&mut query, &embedder);
         for (hash, embeddings) in embedding_iter {
             println!("for hash {} {:?}", hash, embeddings.dims2().unwrap());
             let bytes = embeddings.to_f32_bytes()?;
             db.add_chunk(&hash, &bytes).unwrap();
         }
+        */
 
-        let mut document_indices = Vec::<u32>::new();
+
+        let chunks_count = db.query("SELECT count(hash) FROM chunk")?.point((), |row| {
+                Ok( row.get::<_, f32>(0)?,)
+            }).unwrap();
+        println!("chunks_count {}", chunks_count);
+
+        let mut avg_query = db.query("SELECT avg(length(embedding))
+                FROM chunk WHERE rowid IN (SELECT rowid FROM chunk ORDER BY RANDOM() LIMIT 1000)").unwrap();
+        let avg_len = avg_query.point((), |row| {
+                Ok(
+                    row.get::<_, f32>(0)?,
+                )
+            })?;
+        let avg_embeddings = (avg_len / (128.0 * 4.0)).ceil();
+        println!("avg embeddings per chunk {}", avg_embeddings);
+        let est_total_embeddings = chunks_count * avg_embeddings;
+        let subset_size = chunks_count.sqrt().ceil();
+        println!("est_total_embeddings={} samling subset size {}", est_total_embeddings, subset_size);
+
+        let mut kmeans_query1 = db.query("SELECT chunk.embedding FROM chunk WHERE chunk.rowid IN
+                (SELECT chunk.rowid FROM chunk ORDER BY RANDOM() LIMIT ?1)")?;
+
         let mut all_embeddings = vec![];
         let mut total = 0;
         println!("read embeddings...");
-        for result in kmeans_query.iter2()? {
-            let (id, _filename, _hash, embedding) = result?;
-            //println!("id={} filename={}", id, _filename);
-            let t = Tensor::from_f32_bytes(&embedding, 128, &Device::Cpu)?;
+        for embedding in kmeans_query1.iter((subset_size,), |row| {
+            Ok( row.get::<_, Vec<u8>>(0)? )
+        })? {
+            let t = Tensor::from_f32_bytes(&embedding?, 128, &Device::Cpu)?;
             let split = split_tensor(&t);
             all_embeddings.extend(split);
-            let (m, _n) = t.dims2()?;
-            for _ in 0..m {
-                document_indices.push(id as u32);
-            }
-            total += m;
         }
-        let matrix = Tensor::cat(&all_embeddings, 0).unwrap();
+        let matrix = Tensor::cat(&all_embeddings, 0)?.to_device(&device).unwrap();
         let now = std::time::Instant::now();
-        let k = 1024;
-        let (centers, idxs) = kmeans(&matrix, k, 5, &device)?;
+        let log2_k = (16.0 * est_total_embeddings.sqrt()).log(2.0).floor() as u32;
+        let k = 1 << log2_k;
+        println!("est_total_embeddings={} k={}", est_total_embeddings, k);
+        let (centers, idxs) = kmeans(&matrix, k as usize, 5, &device)?;
         println!("kmeans took {} ms.", now.elapsed().as_millis());
         println!("idxs {}", idxs);
 
+
+        let mut kmeans_query2 = db.query("SELECT document.rowid,length(embedding)/(128*4)
+            FROM document,chunk
+            WHERE document.hash == chunk.hash")?;
+
+        let mut document_indices = Vec::<u32>::new();
+        for result in kmeans_query2.iter((), |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, usize>(1)?,
+                ))
+            })? {
+
+            let (id, m) = result?;
+            for _ in 0..m {
+                document_indices.push(id as u32);
+            }
+        }
+
         println!("write buckets...");
-        let document_indices = Tensor::from_vec(document_indices, total, &Device::Cpu).unwrap();
+        let m = document_indices.len();
+        let document_indices = Tensor::from_vec(document_indices, m, &Device::Cpu).unwrap();
         let now = std::time::Instant::now();
         write_buckets(&db, &matrix, &document_indices, &centers, &device).unwrap();
         println!("write buckets took {} ms.", now.elapsed().as_millis());
@@ -690,7 +743,9 @@ fn main() -> Result<()> {
         println!("Looking up: {}", q);
 
         let mut centers = vec![];
-        for center in center_query.iter4()? {
+        for center in center_query.iter((), |row| {
+            Ok( row.get::<_, Vec<u8>>(0)? )
+        })? {
             let t = Tensor::from_f32_bytes(&center?, 128, &Device::Cpu)?.flatten_all()?;
             centers.push(t);
         }
