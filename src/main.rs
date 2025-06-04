@@ -166,7 +166,8 @@ fn match_centroids(
     let centers = centers.to_device(&device)?;
     let query_centroid_similarity = query_embeddings.matmul(&centers.transpose(D::Minus1, D::Minus2)?).unwrap();
 
-    let sorted_indices = query_centroid_similarity.arg_sort_last_dim(false)?;
+    let query_centroid_similarity = query_centroid_similarity.to_device(&Device::Cpu)?;
+    let sorted_indices = query_centroid_similarity.to_device(&Device::Cpu)?.arg_sort_last_dim(false)?;
     let (m, n) = sorted_indices.dims2()?;
 
     let mut topk_clusters = vec![];
