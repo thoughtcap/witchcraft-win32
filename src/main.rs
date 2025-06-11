@@ -95,7 +95,6 @@ fn kmeans(data: &Tensor, k: usize, max_iter: usize, device: &Device) -> Result<(
                 let normalized = sum.broadcast_div(&sum.sqr()?.sum_keepdim(0)?.sqrt()?);
                 centers_vec.push(normalized?);
             } else {
-                println!("i={} resample centroid", i);
                 let idx = rand::seq::index::sample(&mut rng, m, 1).into_vec()[0];
                 let center = data.get(idx)?;
                 let normalized = center.broadcast_div(&center.sqr()?.sum_keepdim(0)?.sqrt()?);
@@ -115,8 +114,14 @@ fn write_buckets(db: &DB,
 
     let (k, _) = centers.dims2()?;
     println!("k={}", k);
+    let mut mmuls_total = 0;
+    let mut writes_total = 0;
 
-    println!("read all embeddings...");
+    let embeddings_count = db.query("SELECT sum(length(embedding)/128) FROM chunk")?.point((), |row| {
+            Ok( row.get::<_, f32>(0)?,)
+        }).unwrap();
+    let bar = ProgressBar::new(embeddings_count as u64);
+
     //let mut document_indices = vec![];
     let mut document_indices = Vec::<u32>::new();
     let mut all_embeddings = vec![];
@@ -152,15 +157,13 @@ fn write_buckets(db: &DB,
                 batch += m;
 
                 if batch >= 0x10000 {
-                    println!("batch {}", batch);
-
                     let now = std::time::Instant::now();
                     let data = Tensor::cat(&all_embeddings, 0)?.to_device(&device).unwrap();
                     let data_cpu = Tensor::cat(&all_embeddings, 0)?.to_device(&Device::Cpu).unwrap();
 
                     let sim = data.matmul(&centers.transpose(D::Minus1, D::Minus2)?)?;
                     let cluster_assignments = sim.argmax(D::Minus1)?.to_device(&Device::Cpu)?;
-                    println!("mmul + argmax took {} ms.", now.elapsed().as_millis());
+                    mmuls_total += now.elapsed().as_millis();
 
                     let now = std::time::Instant::now();
                     let mut writer = merger::Writer::new_with_suffix("dump", slice).unwrap();
@@ -216,7 +219,9 @@ fn write_buckets(db: &DB,
                         i += 1;
                     }
                     writer.finish().unwrap();
-                    println!("writes took {} ms.", now.elapsed().as_millis());
+                    writes_total += now.elapsed().as_millis();
+                    bar.inc(batch as u64);
+
                     document_indices.clear();
                     all_embeddings.clear();
                     batch = 0;
@@ -229,6 +234,9 @@ fn write_buckets(db: &DB,
             }
         }
     }
+    bar.finish();
+    println!("mmuls took {} ms.", mmuls_total);
+    println!("writes took {} ms.", writes_total);
     println!("merge all");
     let mut merger = merger::Merger::new("dump", batches).unwrap();
     for result in &mut merger {
