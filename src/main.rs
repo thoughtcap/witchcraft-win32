@@ -160,9 +160,17 @@ fn write_buckets(db: &DB,
             }
         }
 
-        if batch >= 0x10000 || done {
+        let batch_size = 0x10000;
+
+        if batch >= batch_size || done {
             let now = std::time::Instant::now();
-            let data = Tensor::cat(&all_embeddings, 0)?.to_device(&device).unwrap();
+
+            let take = batch.min(batch_size);
+            let left = batch - take;
+
+            let embeddings = all_embeddings.split_off(left);
+            let indices = document_indices.split_off(left);
+            let data = Tensor::cat(&embeddings, 0)?.to_device(&device).unwrap();
 
             let sim = data.matmul(&centers.transpose(D::Minus1, D::Minus2)?)?;
             let cluster_assignments = sim.argmax(D::Minus1)?.to_device(&Device::Cpu)?;
@@ -179,15 +187,14 @@ fn write_buckets(db: &DB,
                 .collect();
             pairs.sort_by_key(|&(_, bucket)| bucket);
 
-            let mut indices_bytes: Vec<u8> = Vec::with_capacity(batch * 4);
-            let mut residuals_bytes: Vec<u8> = Vec::with_capacity(batch * 64);
-            let n = pairs.len();
+            let mut indices_bytes: Vec<u8> = Vec::with_capacity(take * 4);
+            let mut residuals_bytes: Vec<u8> = Vec::with_capacity(take * 64);
             let (_, mut prev_bucket) = pairs[0];
             let mut count = 0;
             let mut bucket_done = false;
 
             for i in 0.. {
-                let (sample, bucket) = if i < n {
+                let (sample, bucket) = if i < take {
                     pairs[i]
                 } else {
                     bucket_done = true;
@@ -208,21 +215,19 @@ fn write_buckets(db: &DB,
                     break;
                 }
 
-                let doc_idx = document_indices[sample];
+                let doc_idx = indices[sample];
                 indices_bytes.extend_from_slice(&doc_idx.to_ne_bytes());
                 let center = centers_cpu.get(bucket as usize)?;
-                let residual = (all_embeddings[sample].get(0) - &center)?;
+                let residual = (embeddings[sample].get(0) - &center)?;
                 let residual_quantized = residual.compand()?.quantize(4)?.to_q4_bytes()?;
                 residuals_bytes.extend(&residual_quantized);
                 count += 1;
             }
             tmpfiles.push(writer.finish()?);
             writes_total += now.elapsed().as_millis();
-            bar.inc(batch as u64);
+            bar.inc(take as u64);
 
-            document_indices.clear();
-            all_embeddings.clear();
-            batch = 0;
+            batch = left;
         }
     }
     bar.finish();
