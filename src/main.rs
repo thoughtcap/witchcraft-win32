@@ -5,9 +5,8 @@ use min_heap::MinHeap;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::io::{BufReader, Read, BufWriter, Write};
+use std::io::{BufWriter, Write};
 use std::mem::size_of;
-use std::path::Path;
 use std::path::PathBuf;
 use indicatif::ProgressBar;
 use csv;
@@ -462,28 +461,6 @@ fn split_tensor(tensor: &Tensor) -> Vec<Tensor> {
         .collect()
 }
 
-fn compute_sha256<P: AsRef<Path>>(path: P) -> Result<String, Box<dyn std::error::Error>> {
-    // Open the file
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
-
-    // Read file in chunks
-    let mut buffer = [0u8; 0x10000];
-    loop {
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-
-    // Finalize and return the hash as a hex string
-    let result = hasher.finalize();
-    Ok(format!("{:x}", result))
-}
-
-
 fn scan_documents_dir(db: &DB, dirname: &str) -> Result<()> {
 
     println!("register documents...");
@@ -500,8 +477,11 @@ fn scan_documents_dir(db: &DB, dirname: &str) -> Result<()> {
         let path = entry.path();
         let filename = path.to_str().unwrap();
         let body = fs::read_to_string(filename)?;
-        let hash = compute_sha256(path.clone()).unwrap();
-        //println!("{} hash is {}", filename, hash);
+
+        let mut hasher = Sha256::new();
+        hasher.update(&body);
+        let hash = format!("{:x}", hasher.finalize());
+
         db.add_doc(&filename, &hash, &body).unwrap();
         bar.inc(1);
     }
