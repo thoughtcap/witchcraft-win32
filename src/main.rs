@@ -124,16 +124,18 @@ fn write_buckets(db: &DB,
 
     //let mut document_indices = vec![];
     let mut document_indices = Vec::<u32>::new();
+    let mut all_hashes = vec![];
     let mut all_embeddings = vec![];
 
-    let mut query = db.query("SELECT document.rowid,chunk.embedding FROM document,chunk
+    let mut query = db.query("SELECT document.rowid,chunk.hash,chunk.embedding FROM document,chunk
         WHERE document.hash = chunk.hash
         ORDER BY document.rowid")?;
 
     let mut results = query.iter((), |row| {
             Ok((
                 row.get::<_, u32>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
             ))
         })?;
 
@@ -145,14 +147,15 @@ fn write_buckets(db: &DB,
 
         match results.next() {
             Some(result) => {
-                let (id, embedding) = result?;
+                let (id, hash, embedding) = result?;
                 let t = Tensor::from_f32_bytes(&embedding, 128, &Device::Cpu)?;
                 let split = split_tensor(&t);
                 let m = split.len();
-                all_embeddings.extend(split);
                 for _ in 0..m {
                     document_indices.push(id as u32);
                 }
+                all_hashes.push(hash);
+                all_embeddings.extend(split);
                 batch += m;
             }
             None => {
@@ -231,16 +234,34 @@ fn write_buckets(db: &DB,
         }
     }
     bar.finish();
+
     println!("mmuls took {} ms.", mmuls_total);
     println!("writes took {} ms.", writes_total);
     println!("merge all");
+
+    db.begin_transaction().unwrap();
+
+    let max_generation = db.query("SELECT max(generation) FROM indexed_chunk")?.point((), |row| {
+            Ok( row.get::<_, u32>(0)?,)
+        }).unwrap_or(0);
+    let next_generation = max_generation + 1;
+
     let mut merger = merger::Merger::from_tempfiles(tmpfiles)?;
     for result in &mut merger {
         let entry = result?;
         let center = centers_cpu.get(entry.value as usize)?;
         let center_bytes = center.to_f32_bytes()?;
-        db.add_bucket(entry.value, &center_bytes, &entry.tags, &entry.data).unwrap();
+        db.add_bucket(entry.value, next_generation, &center_bytes, &entry.tags, &entry.data).unwrap();
     }
+    println!("write {} hashes to indexed_chunk", all_hashes.len());
+    for hash in all_hashes {
+        db.add_indexed_chunk(&hash, next_generation).unwrap();
+    }
+
+    db.query("DELETE FROM bucket WHERE generation = ?1")?.execute((max_generation,)).unwrap();
+    db.query("DELETE FROM indexed_chunk WHERE generation = ?1")?.execute((max_generation,)).unwrap();
+    db.commit_transaction().unwrap();
+
     Ok(())
 }
 
@@ -295,8 +316,7 @@ fn reciprocal_rank_fusion(
 
 
 fn match_centroids(
-        center_query: &mut Query,
-        bucket_query: &mut Query,
+        db: &DB,
         query_embeddings: &Tensor,
         cutoff: f32,
         top_k: usize) -> Result<Vec<(f32, u32)>> {
@@ -306,6 +326,8 @@ fn match_centroids(
     let t_prime = 40000;
 
     let device = query_embeddings.device();
+    let mut center_query = db.query("SELECT id,length(indices)/4,center FROM bucket ORDER BY id")?;
+    let mut bucket_query = db.query("SELECT indices,residuals FROM bucket WHERE generation = ?1 and id = ?2")?;
 
     let mut cluster_ids = vec![];
     let mut sizes = vec![];
@@ -365,10 +387,14 @@ fn match_centroids(
     let mut all = vec![];
     let mut count = 0;
 
+    let max_generation = db.query("SELECT max(generation) FROM indexed_chunk")?.point((), |row| {
+            Ok( row.get::<_, u32>(0)?,)
+        }).unwrap_or(0);
+
     let mut all_document_embeddings = vec![];
     for i in topk_clusters {
         //let (document_indices, document_embeddings) = bucket_query.point3(cluster_ids[i as usize])?;
-        let (document_indices, document_embeddings) = bucket_query.point((cluster_ids[i as usize], ), |row| {
+        let (document_indices, document_embeddings) = bucket_query.point((max_generation, cluster_ids[i as usize]), |row| {
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, Vec<u8>>(1)?,
@@ -632,10 +658,17 @@ impl DB {
         connection.execute(query, ()).unwrap();
 
         let query = "CREATE TABLE IF NOT EXISTS bucket(id INTEGER PRIMARY KEY,
+            generation INTEGER NOT NULL,
             center BLOB NOT NULL, indices BLOB NOT NULL, residuals BLOB NOT NULL)";
         connection.execute(query, ()).unwrap();
 
-        let query = "CREATE INDEX IF NOT EXISTS bucket_index ON bucket(id)";
+        let query = "CREATE INDEX IF NOT EXISTS bucket_index ON bucket(generation, id)";
+        connection.execute(query, ()).unwrap();
+
+        let query = "CREATE TABLE IF NOT EXISTS indexed_chunk(hash TEXT PRIMARY KEY NOT NULL, generation INTEGER NOT NULL)";
+        connection.execute(query, ()).unwrap();
+
+        let query = "CREATE INDEX IF NOT EXISTS indexed_chunk_index ON indexed_chunk(generation, hash)";
         connection.execute(query, ()).unwrap();
 
         Self { connection }
@@ -651,19 +684,14 @@ impl DB {
         Ok(Query { stmt })
     }
 
-    fn make_bucket_center_query(self: &Self) -> SQLResult<Query> {
-        let stmt = self.connection.prepare("SELECT id,length(indices)/4,center FROM bucket ORDER BY id")?;
-        Ok(Query { stmt })
+    fn begin_transaction(&self) -> SQLResult<()> {
+        self.connection.execute("BEGIN", ()).unwrap();
+        Ok(())
     }
 
-    fn make_bucket_residuals_query(self: &Self) -> SQLResult<Query> {
-        let stmt = self.connection.prepare("SELECT indices,residuals FROM bucket WHERE id = ?1")?;
-        Ok(Query { stmt })
-    }
-
-    fn make_document_body_query(self: &Self) -> SQLResult<Query> {
-        let stmt = self.connection.prepare("SELECT filename,body FROM document WHERE rowid = ?1")?;
-        Ok(Query { stmt })
+    fn commit_transaction(&self) -> SQLResult<()> {
+        self.connection.execute("COMMIT", ()).unwrap();
+        Ok(())
     }
 
     fn add_doc(self: &Self, filename: &str, hash: &str, body: &str) -> SQLResult<()> {
@@ -676,9 +704,15 @@ impl DB {
         Ok(())
     }
 
-    fn add_bucket(self: &Self, id: u32, center: &Vec<u8>, indices: &Vec<u8>, residuals: &Vec<u8>) -> SQLResult<()> {
-        self.connection.execute("INSERT OR REPLACE INTO bucket VALUES(?1, ?2, ?3, ?4)",
-            (id, center, indices, residuals))?;
+    fn add_bucket(self: &Self, id: u32, generation: u32, center: &Vec<u8>, indices: &Vec<u8>, residuals: &Vec<u8>) -> SQLResult<()> {
+        self.connection.execute("INSERT OR REPLACE INTO bucket VALUES(?1, ?2, ?3, ?4, ?5)",
+            (id, generation, center, indices, residuals)).unwrap();
+        Ok(())
+    }
+
+    fn add_indexed_chunk(self: &Self, hash: &str, generation: u32) -> SQLResult<()> {
+        self.connection.execute("INSERT OR REPLACE INTO indexed_chunk VALUES(?1, ?2)",
+            (hash, generation)).unwrap();
         Ok(())
     }
 }
@@ -695,6 +729,11 @@ impl<'connection> Query<'connection> {
         where F: FnOnce(&Row) -> SQLResult<T2> + 'stmt, T1: rusqlite::Params,
     {
         self.stmt.query_row(args, map_fn)
+    }
+
+    fn execute<'stmt, T1: rusqlite::Params>(&'stmt mut self, args: T1) -> SQLResult<()> {
+        self.stmt.execute(args).unwrap();
+        Ok(())
     }
 }
 
@@ -724,10 +763,7 @@ fn main() -> Result<()> {
     let embedder = Embedder::new(&device);
 
     let db = DB::new("mydb.sqlite");
-
-    let mut center_query = db.make_bucket_center_query().unwrap();
-    let mut bucket_query = db.make_bucket_residuals_query().unwrap();
-    let mut body_query = db.make_document_body_query().unwrap();
+    let mut body_query = db.query("SELECT filename,body FROM document WHERE rowid = ?1")?;
 
     let args: Vec<String> = env::args().collect();
     if args.len() == 3 && args[1] == "scan" {
@@ -759,6 +795,7 @@ fn main() -> Result<()> {
         db.execute("DELETE from bucket").unwrap();
 
         let mut kmeans_query1 = db.query("SELECT chunk.embedding FROM chunk")?;
+        //let mut kmeans_query1 = db.query("SELECT chunk.hash FROM chunk LEFT JOIN indexed_chunk ON indexed_chunk.hash=chunk.hash WHERE indexed_chunk.hash IS NULL")?;
         let mut total_embeddings = 0;
         let mut rng = rand::rng();
         let mut all_embeddings = vec![];
@@ -804,7 +841,7 @@ fn main() -> Result<()> {
 
         println!("Doing semantic search for: {}", q);
         let qe = embedder.embed(q)?.get(0)?;
-        let sem_matches = match_centroids(&mut center_query, &mut bucket_query, &qe, 0.5, 10).unwrap();
+        let sem_matches = match_centroids(&db, &qe, 0.5, 10).unwrap();
         let sem_idxs: Vec<u32> = sem_matches.iter().map(|&(_, idx)| idx).collect();
         println!("semantic search found {} matches", sem_idxs.len());
 
@@ -856,7 +893,7 @@ fn main() -> Result<()> {
 
             let sem_matches = if use_semantic {
                 let qe = embedder.embed(&question)?.get(0)?;
-                match_centroids(&mut center_query, &mut bucket_query, &qe, 0.0, 100).unwrap()
+                match_centroids(&db, &qe, 0.0, 100).unwrap()
             } else {
                 [].to_vec()
             };
