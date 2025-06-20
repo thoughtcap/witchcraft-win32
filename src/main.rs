@@ -819,8 +819,6 @@ fn main() -> Result<()> {
 
     } else if args.len() == 2 && &args[1] == "index" {
 
-        db.execute("DELETE from bucket").unwrap();
-
         let mut kmeans_query1 = db.query("SELECT chunk.embedding FROM chunk")?;
         let mut total_embeddings = 0;
         let mut rng = rand::rng();
