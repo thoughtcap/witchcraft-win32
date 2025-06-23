@@ -116,7 +116,7 @@ fn write_buckets(db: &DB,
     let mut mmuls_total = 0;
     let mut writes_total = 0;
 
-    let embeddings_count = db.query("SELECT sum(length(embedding)/128) FROM chunk")?.point((), |row| {
+    let embeddings_count = db.query("SELECT sum(length(embeddings)/128) FROM chunk")?.point((), |row| {
             Ok( row.get::<_, u32>(0)?,)
         }).unwrap();
     assert!(embeddings_count > 0);
@@ -127,7 +127,7 @@ fn write_buckets(db: &DB,
     let mut all_hashes = vec![];
     let mut all_embeddings = vec![];
 
-    let mut query = db.query("SELECT document.rowid,chunk.hash,chunk.embedding FROM document,chunk
+    let mut query = db.query("SELECT document.rowid,chunk.hash,chunk.embeddings FROM document,chunk
         WHERE document.hash = chunk.hash
         ORDER BY document.rowid")?;
 
@@ -147,8 +147,10 @@ fn write_buckets(db: &DB,
 
         match results.next() {
             Some(result) => {
-                let (id, hash, embedding) = result?;
-                let t = Tensor::from_f32_bytes(&embedding, 128, &Device::Cpu)?;
+                let (id, hash, embeddings) = result?;
+                let t = Tensor::from_q8_bytes(&embeddings, 128, &Device::Cpu)?
+                    .dequantize(8)?
+                    .l2_normalize()?;
                 let split = split_tensor(&t);
                 let m = split.len();
                 for _ in 0..m {
@@ -324,8 +326,11 @@ fn match_centroids(
 
     let k = 32;
     let t_prime = 40000;
-
     let device = query_embeddings.device();
+
+    // XXX this step is quite slow. We should consider storing the centers matrix separately from
+    // the buckets
+
     let mut center_query = db.query("SELECT id,length(indices)/4,center FROM bucket ORDER BY id")?;
     let mut bucket_query = db.query("SELECT indices,residuals FROM bucket WHERE generation = ?1 and id = ?2")?;
 
@@ -347,6 +352,9 @@ fn match_centroids(
     }
     assert!(centers.len() > 0);
     let centers = Tensor::stack(&centers, 0)?.to_device(&device)?;
+
+    println!("reading and stacking centers took {} ms.", now.elapsed().as_millis());
+    let now = std::time::Instant::now();
 
     let query_centroid_similarity = query_embeddings.matmul(&centers.transpose(D::Minus1, D::Minus2)?).unwrap();
     let query_centroid_similarity = query_centroid_similarity.to_device(&Device::Cpu)?;
@@ -417,12 +425,12 @@ fn match_centroids(
             count += 1;
         }
     }
-    println!("reading indexed embeddings took {} ms.", now.elapsed().as_millis());
+    println!("reading {} indexed embeddings took {} ms.", count, now.elapsed().as_millis());
 
     let now = std::time::Instant::now();
     let mut num_unindexed = 0;
     let mut unindexed_chunks_query = db.query(
-        "SELECT document.rowid,chunk.hash,chunk.embedding FROM document,chunk
+        "SELECT document.rowid,chunk.hash,chunk.embeddings FROM document,chunk
             LEFT JOIN indexed_chunk ON indexed_chunk.generation=?1
             AND indexed_chunk.hash=chunk.hash
             WHERE indexed_chunk.hash IS NULL
@@ -438,7 +446,9 @@ fn match_centroids(
     for result in results {
         let (id, hash, embeddings) = result?;
         println!("reading unindexed chunk with hash={}", hash);
-        let embeddings = Tensor::from_f32_bytes(&embeddings, 128, &device)?;
+        let embeddings = Tensor::from_q8_bytes(&embeddings, 128, &Device::Cpu)?
+            .dequantize(8)?
+            .l2_normalize()?;
         let (m, _) = embeddings.dims2()?;
         all_document_embeddings.push(embeddings);
         for _ in 0..m {
@@ -681,7 +691,7 @@ impl DB {
         connection.execute(query, ()).unwrap();
         println!("rebuild done");
 
-        let query = "CREATE TABLE IF NOT EXISTS chunk(hash TEXT PRIMARY KEY NOT NULL, embedding BLOB NOT NULL)";
+        let query = "CREATE TABLE IF NOT EXISTS chunk(hash TEXT PRIMARY KEY NOT NULL, embeddings BLOB NOT NULL)";
         connection.execute(query, ()).unwrap();
 
         let query = "CREATE TABLE IF NOT EXISTS bucket(id INTEGER PRIMARY KEY,
@@ -778,6 +788,7 @@ fn u8_to_vec_u32(bytes: &[u8]) -> Vec<u32> {
     u32s
 }
 
+
 fn usage(arg0: &String) {
     eprintln!("Usage: {} scan | readcsv <file> | embed | index | query <text> | hybrid <text> | querycsv <file> <results-file>", arg0);
     std::process::exit(1)
@@ -813,21 +824,21 @@ fn main() -> Result<()> {
         let embedding_iter = Gatherer::new(&mut query, &embedder);
         for (hash, embeddings) in embedding_iter {
             println!("for hash {} {:?}", hash, embeddings.dims2().unwrap());
-            let bytes = embeddings.to_f32_bytes()?;
+            let bytes = embeddings.stretch_rows()?.quantize(8)?.to_q8_bytes()?;
             db.add_chunk(&hash, &bytes).unwrap();
         }
 
     } else if args.len() == 2 && &args[1] == "index" {
 
-        let mut kmeans_query1 = db.query("SELECT chunk.embedding FROM chunk")?;
+        let mut kmeans_query1 = db.query("SELECT chunk.embeddings FROM chunk")?;
         let mut total_embeddings = 0;
         let mut rng = rand::rng();
         let mut all_embeddings = vec![];
         println!("read embeddings...");
-        for embedding in kmeans_query1.iter((), |row| {
+        for embeddings in kmeans_query1.iter((), |row| {
             Ok( row.get::<_, Vec<u8>>(0)? )
         })? {
-            let t = Tensor::from_f32_bytes(&embedding?, 128, &Device::Cpu)?;
+            let t = Tensor::from_q8_bytes(&embeddings?, 128, &Device::Cpu)?;
             let (m, _) = t.dims2()?;
             let k = ((m as f32).sqrt().ceil()) as usize;
             let subset_idx = rand::seq::index::sample(&mut rng, m, k).into_vec();
@@ -837,7 +848,10 @@ fn main() -> Result<()> {
             }
             total_embeddings += m;
         }
-        let matrix = Tensor::stack(&all_embeddings, 0)?.to_device(&device).unwrap();
+        let matrix = Tensor::stack(&all_embeddings, 0)?.to_device(&device)?
+            .dequantize(8)?
+            .l2_normalize()?;
+
         let now = std::time::Instant::now();
         let log2_k = (16.0 * (total_embeddings as f64).sqrt()).log(2.0).floor() as u32;
         let k = 1 << log2_k;

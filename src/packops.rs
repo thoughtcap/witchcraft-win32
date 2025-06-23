@@ -7,10 +7,15 @@ pub trait TensorPackOps {
     fn inv_compand(&self) -> Result<Tensor>;
     fn quantize(&self, bits: u32) -> Result<Tensor>;
     fn dequantize(&self, bits: u32) -> Result<Tensor>;
+    fn l2_normalize(&self) -> Result<Tensor>;
+    fn stretch_rows(&self) -> Result<Tensor>;
     //fn from_q4_bytes(buffer: &[u8], cols: usize, device: &Device) -> Result<Tensor>;
+    fn from_q8_bytes(buffer: &[u8], cols: usize, device: &Device) -> Result<Tensor>;
     fn from_companded_q4_bytes(buffer: &[u8], cols: usize, device: &Device) -> Result<Tensor>;
+    //fn from_companded_q8_bytes(buffer: &[u8], cols: usize, device: &Device) -> Result<Tensor>;
     fn from_f32_bytes(bytes: &[u8], cols: usize, device: &Device) -> Result<Tensor>;
     fn to_q4_bytes(&self) -> Result<Vec<u8>>;
+    fn to_q8_bytes(&self) -> Result<Vec<u8>>;
     fn to_f32_bytes(&self) -> Result<Vec<u8>>;
 }
 
@@ -82,6 +87,22 @@ impl TensorPackOps for Tensor {
     }
     */
 
+    fn from_q8_bytes(bytes: &[u8], cols: usize, device: &Device) -> Result<Tensor> {
+        let mut out = Vec::with_capacity(bytes.len());
+        for &byte in bytes {
+            out.push(byte as f32);
+        }
+
+        assert!(
+            out.len() % cols == 0,
+            "Unpacked data length ({}) must be divisible by cols ({})",
+            out.len(),
+            cols
+        );
+        let rows = out.len() / cols;
+        Ok(Tensor::from_vec(out, &[rows, cols], device)?)
+    }
+
     fn from_f32_bytes(bytes: &[u8], cols: usize, device: &Device) -> Result<Tensor> {
         let f32_size = size_of::<f32>();
 
@@ -123,6 +144,23 @@ impl TensorPackOps for Tensor {
         Ok(packed)
     }
 
+    fn to_q8_bytes(&self) -> Result<Vec<u8>> {
+        let flat = self.flatten_all()?.to_vec1::<f32>()?;
+        /*
+        let mut hist: [u32; 256] = [0; 256];
+        for i in &flat {
+            hist[*i as usize] += 1;
+        }
+        println!("hist {:?}", hist);
+        */
+
+        let mut packed = Vec::with_capacity(flat.len());
+        for i in &flat {
+            packed.push(*i as u8);
+        }
+        Ok(packed)
+    }
+
     fn to_f32_bytes(&self) -> Result<Vec<u8>> {
         let floats: Vec<f32> = self.flatten_all()?.to_vec1::<f32>()?;
         let mut bytes = Vec::with_capacity(floats.len() * 4);
@@ -159,6 +197,66 @@ impl TensorPackOps for Tensor {
         Ok(Tensor::from_vec(out, &[rows, cols], device)?)
     }
 
+/*
+    fn from_companded_q8_bytes(bytes: &[u8], cols: usize, device: &Device) -> Result<Tensor> {
+        let x = Tensor::arange(0.0f32, 256.0f32, &Device::Cpu)?;
+        let x = x.dequantize(8)?.inv_compand()?;
+        let mut table : [f32; 256] = [0.0; 256];
+        for i in 0..256 {
+            table[i] = x.get(i)?.to_scalar()?;
+        }
+
+        let mut out = Vec::with_capacity(bytes.len());
+        for i in bytes {
+            out.push(table[*i as usize]);
+        }
+
+        assert!(
+            out.len() % cols == 0,
+            "Unpacked data length ({}) must be divisible by cols ({})",
+            out.len(),
+            cols
+        );
+        let rows = out.len() / cols;
+        Ok(Tensor::from_vec(out, &[rows, cols], device)?)
+    }
+    */
+
+    fn l2_normalize(&self) -> Result<Tensor> {
+        Ok(self.broadcast_div(&self.sqr()?.sum_keepdim(1)?.sqrt()?)?)
+    }
+
+    fn stretch_rows(&self) -> Result<Tensor> {
+        let device = self.device();
+        let (m, n) = self.dims2()?;
+        assert!(n == 128);
+
+        let mut scaled_rows = Vec::with_capacity(m);
+
+        for i in 0..m {
+            let row = self.get(i)?; // shape: (128,)
+            let v = row.to_vec1::<f32>()?;
+
+            let mut max = std::f32::MIN;
+            for x in &v {
+                let a = (*x).abs();
+                max = if a > max { a } else { max };
+            }
+            let range = max + 1e-6;
+            let scale = 1.0 / range;
+
+            let mut v2 = Vec::with_capacity(n);
+            for i in 0..n {
+                v2.push(scale * v[i]);
+            }
+
+            scaled_rows.push(Tensor::from_vec(v2, 128, &device)?);
+        }
+
+        Ok(Tensor::cat(&scaled_rows, 0)?)
+    }
+
+
 }
 
 
@@ -172,6 +270,26 @@ mod tests {
         println!("x={}", x);
         let x = x.dequantize(4)?;
         println!("x={}", x);
+        Ok(())
+    }
+    #[test]
+    fn test_quantize() -> Result<()> {
+        let x1 = Tensor::randn(0f32, 0.26f32, (1, 128), &Device::Cpu)?;
+        let bytes = x1.quantize(8)?.to_q8_bytes()?;
+        let x2 = Tensor::from_q8_bytes(&bytes, 128, &Device::Cpu)?.dequantize(8)?;
+        let mse = (&x2 - &x1)?.powf(2.0)?.sum_all()?.to_scalar::<f32>()?;
+        println!("mse {}", mse);
+        assert!(mse < 0.01);
+        Ok(())
+    }
+    #[test]
+    fn test_stretch_quantize() -> Result<()> {
+        let x1 = Tensor::randn(0f32, 1.0f32, (1, 128), &Device::Cpu)?.l2_normalize()?;
+        let bytes = x1.stretch_rows()?.quantize(8)?.to_q8_bytes()?;
+        let x2 = Tensor::from_q8_bytes(&bytes, 128, &Device::Cpu)?.dequantize(8)?.l2_normalize()?;
+        let mse = (&x2 - &x1)?.powf(2.0)?.sum_all()?.to_scalar::<f32>()?;
+        println!("mse {}", mse);
+        assert!(mse < 0.001);
         Ok(())
     }
     #[test]
