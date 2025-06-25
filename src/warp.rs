@@ -467,7 +467,7 @@ fn match_centroids(
     for result in results {
         let (id, hash, embeddings) = result?;
         println!("reading unindexed chunk with hash={}", hash);
-        let embeddings = Tensor::from_q8_bytes(&embeddings, EMBEDDING_DIM, &Device::Cpu)?
+        let embeddings = Tensor::from_q8_bytes(&embeddings, EMBEDDING_DIM, &device)?
             .dequantize(8)?
             .l2_normalize()?;
         let (m, _) = embeddings.dims2()?;
