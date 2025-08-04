@@ -1,6 +1,7 @@
 {
   "name": "warp",
   "type": "module",
+  "main": "index.cjs",
   "packageManager": "yarn@4.9.2",
   "devDependencies": {
     "@napi-rs/cli": "^2.18.4",
