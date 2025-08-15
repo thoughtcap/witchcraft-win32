@@ -8,7 +8,13 @@ this repo contains python scripts for downloading them from Huggingface
 and exporting to a single safetensors file:
 
 * requirements.txt is for use with pip, to set up an env with
-  the required python packages for the download scripts
+  the required python packages for the download scripts, as in:
+
+```
+python3 -m venv env
+source env/bin/activate
+pip -r requirements.txt
+```
 
 * downloadxtr.py downloads the full repo, we only need the tokenizers
 
