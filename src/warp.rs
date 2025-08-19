@@ -2,7 +2,6 @@
 
 use csv;
 use indicatif::ProgressBar;
-use min_heap::MinHeap;
 use rusqlite::{Connection, OpenFlags, Result as SQLResult, Row, Statement};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -258,13 +257,19 @@ fn write_buckets(db: &DB, centers: &Tensor, device: &Device) -> Result<()> {
     Ok(())
 }
 
-fn fulltext_search(db: &DB, q: &String) -> Result<Vec<u32>> {
+fn fulltext_search(db: &DB, q: &String, sql_filter: Option<&str>) -> Result<Vec<u32>> {
     let mut fts_idxs = vec![];
-    let mut query = db.query(
+
+    let sql = format!(
         "SELECT rowid,bm25(document_fts) AS score
         FROM document_fts
-        WHERE document_fts MATCH ?1 ORDER BY score",
-    )?;
+        WHERE document_fts MATCH ?1 {} ORDER BY score",
+        match sql_filter {
+            Some(filter) => format!("AND {filter}"),
+            _ => String::new(),
+        }
+    );
+    let mut query = db.query(&sql)?;
 
     let q: String = q
         .chars()
@@ -343,7 +348,7 @@ fn get_centers(db: &DB, device: &Device, version: u64) -> Result<(Vec<u32>, Vec<
         Tensor::zeros(&[0, EMBEDDING_DIM], DType::F32, &device)?
     };
     println!(
-        "reading and stacking centers took {} ms.",
+        "reading and stacking centers took {} ms (caching result for future queries.)",
         now.elapsed().as_millis()
     );
 
@@ -364,8 +369,8 @@ fn match_centroids(
     query_embeddings: &Tensor,
     cutoff: f32,
     top_k: usize,
+    sql_filter: Option<&str>,
 ) -> Result<Vec<(f32, u32)>> {
-
     let max_generation = db
         .query("SELECT MAX(generation) FROM indexed_chunk")?
         .point((), |row| Ok(row.get::<_, u32>(0)?))
@@ -429,16 +434,19 @@ fn match_centroids(
 
         let now = std::time::Instant::now();
 
-        db.execute("CREATE TEMPORARY TABLE temp(id INTEGER)").unwrap();
-
-        let mut bucket_query =
-            db.query("SELECT bucket.id,indices,residuals FROM bucket
+        db.execute("CREATE TEMPORARY TABLE temp(id INTEGER)")
+            .unwrap();
+        let mut bucket_query = db.query(
+            "SELECT bucket.id,indices,residuals FROM bucket
                 JOIN temp ON bucket.id = temp.id
-                WHERE generation = ?1")?;
+                WHERE generation = ?1",
+        )?;
         let mut insert_temp_query = db.query("INSERT INTO TEMP VALUES(?1)")?;
 
         for i in topk_clusters {
-            insert_temp_query.execute((cluster_ids[i as usize],)).unwrap()
+            insert_temp_query
+                .execute((cluster_ids[i as usize],))
+                .unwrap()
         }
 
         let results = bucket_query.iter((max_generation,), |row| {
@@ -540,10 +548,12 @@ fn match_centroids(
 
     let mut current = Tensor::zeros((n,), DType::F32, &Device::Cpu)?;
 
-    let mut heap2 = MinHeap::new();
     let mut unique_docs = 0;
 
     let mut prev_idx = 0;
+
+    db.execute("CREATE TEMPORARY TABLE temp2(rowid INTEGER PRIMARY KEY, score FLOAT)").unwrap();
+    let mut insert_temp_query = db.query("INSERT INTO temp2 VALUES(?1, ?2)")?;
 
     for i in 0.. {
         let is_last = i == all.len() - 1;
@@ -552,17 +562,7 @@ fn match_centroids(
             unique_docs += 1;
             let score = current.mean(0)?.to_scalar::<f32>()?;
             if score >= cutoff {
-                let score_as_u32 = (1000.0 * score) as u32;
-                let elem = (score_as_u32, prev_idx);
-                if heap2.len() < top_k {
-                    heap2.push(elem);
-                } else {
-                    let min = heap2.peek().unwrap();
-                    if *min < elem {
-                        heap2.pop();
-                        heap2.push(elem);
-                    }
-                }
+                insert_temp_query.execute((prev_idx, score)).unwrap();
             }
         }
 
@@ -585,11 +585,26 @@ fn match_centroids(
         now.elapsed().as_millis()
     );
 
-    let mut results = vec![];
-    while let Some((score_as_u32, idx)) = heap2.pop() {
-        results.push((score_as_u32 as f32 / 1000.0, idx));
-    }
-    results.reverse();
+    let sql = format!(
+        "SELECT score,document.rowid
+        FROM document
+        JOIN temp2 ON document.rowid = temp2.rowid
+        ORDER BY score DESC
+        LIMIT ?1 {}",
+        match sql_filter {
+            Some(filter) => format!("WHERE {filter}"),
+            _ => String::new(),
+        }
+    );
+
+    let mut scored_documents_query = db.query(&sql)?;
+    let results = scored_documents_query
+        .iter((top_k,), |row| {
+            Ok((row.get::<_, f32>(0)?, row.get::<_, u32>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    db.execute("DROP TABLE temp2").unwrap();
     Ok(results)
 }
 
@@ -1020,17 +1035,18 @@ pub fn search(
     q: &String,
     threshold: f32,
     use_fulltext: bool,
+    sql_filter: Option<&str>,
 ) -> Result<Vec<(String, String)>> {
     let fts_idxs = if use_fulltext {
         println!("Doing full text search for: {}", q);
-        fulltext_search(&db, &q)?
+        fulltext_search(&db, &q, sql_filter)?
     } else {
         [].to_vec()
     };
 
     println!("Doing semantic search for: {}", q);
     let qe = embedder.embed(q)?.get(0)?;
-    let sem_matches = match_centroids(&db, &qe, threshold, 10).unwrap();
+    let sem_matches = match_centroids(&db, &qe, threshold, 10, sql_filter).unwrap();
     let sem_idxs: Vec<u32> = sem_matches.iter().map(|&(_, idx)| idx).collect();
     println!("semantic search found {} matches", sem_idxs.len());
 
@@ -1077,14 +1093,14 @@ pub fn bulk_search(
 
         println!("\nSearching for: {}", question);
         let fts_idxs = if use_fulltext {
-            fulltext_search(&db, &question)?
+            fulltext_search(&db, &question, None)?
         } else {
             [].to_vec()
         };
 
         let sem_matches = if use_semantic {
             let qe = embedder.embed(&question)?.get(0)?;
-            match_centroids(&db, &qe, 0.0, 100).unwrap()
+            match_centroids(&db, &qe, 0.0, 100, None).unwrap()
         } else {
             [].to_vec()
         };

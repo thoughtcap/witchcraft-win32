@@ -75,8 +75,13 @@ impl Warp {
         }
     }
     #[napi]
-    pub fn search(&self, q: String, threshold: f64) -> Vec<(String, String)> {
-        match warp::search(&self.db, &self.embedder, &q, threshold as f32, true) {
+    pub fn search(&self, q: String, threshold: f64, sql_filter: String) -> Vec<(String, String)> {
+        let filter = if sql_filter.is_empty() {
+            Some(sql_filter.as_str())
+        } else {
+            None
+        };
+        match warp::search(&self.db, &self.embedder, &q, threshold as f32, true, filter) {
             Ok(v) => v,
             Err(e) => {
                 println!("error {} querying for {}", e, &q);
