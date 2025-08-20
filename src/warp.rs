@@ -713,7 +713,7 @@ impl Embedder {
         Self { tokenizer, model }
     }
     fn embed(self: &Self, text: &str) -> Result<Tensor> {
-        let now = std::time::Instant::now();
+        //let now = std::time::Instant::now();
         let tokens = self
             .tokenizer
             .encode(text, true)
@@ -726,7 +726,7 @@ impl Embedder {
             .unsqueeze(0)
             .unwrap();
         let embeddings = self.model.forward(&token_ids).unwrap();
-        println!("embedder took {} ms.", now.elapsed().as_millis());
+        //println!("embedder took {} ms.", now.elapsed().as_millis());
         normalize_l2(&embeddings)
     }
 }
@@ -761,7 +761,14 @@ impl<'a> Iterator for Gatherer<'a> {
         let mut doc_embedding = vec![];
         match self.documents.next() {
             Some((hash, body)) => {
-                let embeddings = self.embedder.embed(&body).unwrap();
+
+                let now = std::time::Instant::now();
+                let embeddings = self.embedder.embed(&body).unwrap().to_device(&Device::Cpu).unwrap();
+
+                let (_b, m, _n) = embeddings.dims3().unwrap();
+                let dt = now.elapsed().as_secs_f64();
+                println!("embedder took {} ms ({} rows/s).", now.elapsed().as_millis(), ((m as f64) / dt).round());
+
                 let split = split_tensor(&embeddings.get(0).ok()?);
                 doc_embedding.extend(split);
                 Some((hash, Tensor::cat(&doc_embedding, 0).unwrap()))
@@ -964,15 +971,13 @@ pub fn embed_chunks(db: &DB, device: &Device) -> Result<()> {
             embeddings.dims2().unwrap()
         );
 
-        let embeddings = embeddings.to_device(&Device::Cpu)?;
-
-        let now = std::time::Instant::now();
+        //let now = std::time::Instant::now();
         let bytes = embeddings.stretch_rows()?.quantize(8)?.to_q8_bytes()?;
-        println!("quantization took {} ms.", now.elapsed().as_millis());
+        //println!("quantization took {} ms.", now.elapsed().as_millis());
 
-        let now = std::time::Instant::now();
+        //let now = std::time::Instant::now();
         db.add_chunk(&hash, &bytes).unwrap();
-        println!("database insert took {} ms.", now.elapsed().as_millis());
+        //println!("database insert took {} ms.", now.elapsed().as_millis());
     }
     Ok(())
 }
