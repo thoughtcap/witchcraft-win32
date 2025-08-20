@@ -1040,6 +1040,7 @@ pub fn search(
     embedder: &Embedder,
     q: &String,
     threshold: f32,
+    top_k: usize,
     use_fulltext: bool,
     sql_filter: Option<&str>,
 ) -> Result<Vec<(String, String)>> {
@@ -1052,7 +1053,7 @@ pub fn search(
 
     println!("Doing semantic search for: {}", q);
     let qe = embedder.embed(q)?.get(0)?;
-    let sem_matches = match_centroids(&db, &qe, threshold, 10, sql_filter).unwrap();
+    let sem_matches = match_centroids(&db, &qe, threshold, top_k, sql_filter).unwrap();
     let sem_idxs: Vec<u32> = sem_matches.iter().map(|&(_, idx)| idx).collect();
     println!("semantic search found {} matches", sem_idxs.len());
 
