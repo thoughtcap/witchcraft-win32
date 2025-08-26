@@ -126,3 +126,18 @@ a simple MPC server in typescript. Not sure yet what if anything we could use
 it for, we would have to tunnel the traffic back from the cloud the the MCP
 server running locally, but then our Assistent would be able to search your
 local files.
+
+## Windows build ##
+
+To build for 64-bit x86 Windows, install the xwin tool with:
+
+```
+cargo install cargo-xwin
+rustup target add x86_64-pc-windows-msvc
+```
+
+and build with
+
+```
+make win
+```
