@@ -29,7 +29,7 @@ impl Indexer {
                     warp::add_doc_from_string(&db, &arg1, &arg2).unwrap();
                 } else if command == "index" {
                     let count = warp::count_unindexed_chunks(&db).unwrap();
-                    println!("count {}", count);
+                    println!("warp unindexed count {}", count);
                     if count >= 2048 {
                         warp::index_chunks(&db, &device).unwrap();
                     }

@@ -104,19 +104,18 @@ fn write_buckets(db: &DB, centers: &Tensor, device: &Device) -> Result<()> {
 
     //let mut document_indices = vec![];
     let mut document_indices = Vec::<u32>::new();
-    let mut all_hashes = vec![];
+    let mut all_chunkids = vec![];
     let mut all_embeddings = vec![];
 
     let mut query = db.query(
-        "SELECT document.rowid,chunk.hash,chunk.embeddings FROM document,chunk
-        WHERE document.hash = chunk.hash
-        ORDER BY document.rowid",
+        "SELECT document.rowid,chunk.rowid,chunk.embeddings FROM document,chunk
+        WHERE document.hash = chunk.hash"
     );
 
     let mut results = query.query_map((), |row| {
         Ok((
             row.get::<_, u32>(0)?,
-            row.get::<_, String>(1)?,
+            row.get::<_, u32>(1)?,
             row.get::<_, Vec<u8>>(2)?,
         ))
     })?;
@@ -128,7 +127,7 @@ fn write_buckets(db: &DB, centers: &Tensor, device: &Device) -> Result<()> {
     while !done {
         match results.next() {
             Some(result) => {
-                let (id, hash, embeddings) = result?;
+                let (id, chunkid, embeddings) = result?;
                 let t = Tensor::from_q8_bytes(&embeddings, EMBEDDING_DIM, &Device::Cpu)?
                     .dequantize(8)?
                     .l2_normalize()?;
@@ -137,7 +136,7 @@ fn write_buckets(db: &DB, centers: &Tensor, device: &Device) -> Result<()> {
                 for _ in 0..m {
                     document_indices.push(id as u32);
                 }
-                all_hashes.push(hash);
+                all_chunkids.push(chunkid);
                 all_embeddings.extend(split);
                 batch += m;
             }
@@ -225,7 +224,7 @@ fn write_buckets(db: &DB, centers: &Tensor, device: &Device) -> Result<()> {
     db.begin_transaction().unwrap();
 
     let max_generation = db
-        .query("SELECT max(generation) FROM indexed_chunk")
+        .query("SELECT max(generation) FROM indexed_chunk2")
         .query_row((), |row| Ok(row.get::<_, u32>(0)?))
         .unwrap_or(0);
     let next_generation = max_generation + 1;
@@ -244,15 +243,15 @@ fn write_buckets(db: &DB, centers: &Tensor, device: &Device) -> Result<()> {
         )
         .unwrap();
     }
-    println!("write {} hashes to indexed_chunk", all_hashes.len());
-    for hash in all_hashes {
-        db.add_indexed_chunk(&hash, next_generation).unwrap();
+    println!("write {} chunk ids to indexed_chunk2", all_chunkids.len());
+    for chunkid in all_chunkids {
+        db.add_indexed_chunk(chunkid, next_generation).unwrap();
     }
 
-    db.query("DELETE FROM bucket WHERE generation = ?1")
+    db.query("DELETE FROM bucket WHERE generation <= ?1")
         .execute((max_generation,))
         .unwrap();
-    db.query("DELETE FROM indexed_chunk WHERE generation = ?1")
+    db.query("DELETE FROM indexed_chunk2 WHERE generation <= ?1")
         .execute((max_generation,))
         .unwrap();
     db.commit_transaction().unwrap();
@@ -403,7 +402,7 @@ fn match_centroids(
     sql_filter: Option<&str>,
 ) -> Result<Vec<(f32, u32)>> {
     let max_generation = db
-        .query("SELECT MAX(generation) FROM indexed_chunk")
+        .query("SELECT MAX(generation) FROM indexed_chunk2")
         .query_row((), |row| Ok(row.get::<_, u32>(0)?))
         .unwrap_or(0);
 
@@ -530,24 +529,26 @@ fn match_centroids(
 
     let now = std::time::Instant::now();
     let mut num_unindexed = 0;
-    let mut unindexed_chunks_query = db.query(
-        "
-        SELECT d.rowid, c.hash, c.embeddings
-        FROM chunk c
-        JOIN document d ON c.hash = d.hash
-        LEFT JOIN indexed_chunk ic ON ic.generation = ?1 AND ic.hash = c.hash
-        WHERE ic.hash IS NULL",
+    let mut unindexed_chunks_query = db.query( "
+        SELECT d.rowid, c.embeddings
+        FROM document AS d
+        JOIN chunk AS c ON c.hash = d.hash
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM indexed_chunk2 AS i
+          WHERE i.chunkid = c.rowid
+            AND i.generation = ?1
+        )"
     );
 
     let results = unindexed_chunks_query.query_map((max_generation,), |row| {
         Ok((
             row.get::<_, u32>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Vec<u8>>(2)?,
+            row.get::<_, Vec<u8>>(1)?,
         ))
     })?;
     for result in results {
-        let (id, _hash, embeddings) = result?;
+        let (id, embeddings) = result?;
         let embeddings = Tensor::from_q8_bytes(&embeddings, EMBEDDING_DIM, &Device::Cpu)?
             .dequantize(8)?
             .l2_normalize()?;
@@ -891,11 +892,14 @@ impl DB {
         let query = "CREATE INDEX IF NOT EXISTS bucket_index ON bucket(generation, id)";
         connection.execute(query, ()).unwrap();
 
-        let query = "CREATE TABLE IF NOT EXISTS indexed_chunk(hash TEXT PRIMARY KEY NOT NULL, generation INTEGER NOT NULL)";
+        let query = "DROP TABLE IF EXISTS indexed_chunk"; // replaced by indexed_chunk2
+        connection.execute(query, ()).unwrap();
+
+        let query = "CREATE TABLE IF NOT EXISTS indexed_chunk2(chunkid INTEGER PRIMARY KEY NOT NULL, generation INTEGER NOT NULL)";
         connection.execute(query, ()).unwrap();
 
         let query =
-            "CREATE INDEX IF NOT EXISTS indexed_chunk_index ON indexed_chunk(generation, hash)";
+            "CREATE UNIQUE INDEX IF NOT EXISTS indexed_chunk_index ON indexed_chunk2(chunkid, generation)";
         connection.execute(query, ()).unwrap();
 
         Self { connection }
@@ -955,11 +959,11 @@ impl DB {
         Ok(())
     }
 
-    fn add_indexed_chunk(self: &Self, hash: &str, generation: u32) -> SQLResult<()> {
+    fn add_indexed_chunk(self: &Self, chunkid: u32, generation: u32) -> SQLResult<()> {
         self.connection
             .execute(
-                "INSERT OR REPLACE INTO indexed_chunk VALUES(?1, ?2)",
-                (hash, generation),
+                "INSERT OR REPLACE INTO indexed_chunk2 VALUES(?1, ?2)",
+                (chunkid, generation),
             )
             .unwrap();
         Ok(())
@@ -1017,15 +1021,13 @@ pub fn embed_chunks(db: &DB, device: &Device) -> Result<()> {
 }
 
 pub fn count_unindexed_chunks(db: &DB) -> Result<usize> {
-    let mut unindexed_chunks_query = db.query(
-        "
-        SELECT IFNULL(SUM(LENGTH(c.embeddings)/128), 0)
-        FROM chunk c
-        JOIN document d ON c.hash = d.hash
-        LEFT JOIN indexed_chunk ic ON ic.generation =
-            (SELECT MAX(generation) FROM indexed_chunk) AND ic.hash = c.hash
-        WHERE ic.hash IS NULL",
-    );
+    let mut unindexed_chunks_query = db.query(&format!(
+        "SELECT IFNULL(SUM(length(c.embeddings)), 0)/{EMBEDDING_DIM} AS total
+        FROM chunk AS c
+        LEFT JOIN indexed_chunk2 AS i
+        ON i.chunkid = c.rowid
+        AND i.generation = (SELECT MAX(generation) FROM indexed_chunk2)
+        WHERE i.chunkid IS NULL"));
 
     let count = unindexed_chunks_query.query_row((), |row| {
         Ok( row.get::<_, usize>(0)? )
@@ -1034,6 +1036,14 @@ pub fn count_unindexed_chunks(db: &DB) -> Result<usize> {
 }
 
 pub fn index_chunks(db: &DB, device: &Device) -> Result<()> {
+
+    let unindexed = count_unindexed_chunks(&db)?;
+    if unindexed == 0 {
+        println!("all chunks indexed already!");
+        return Ok(());
+    }
+    println!("database has {} unindexed chunks, reindexing...", unindexed);
+
     let mut kmeans_query = db.query("SELECT chunk.embeddings FROM chunk");
     let mut total_embeddings = 0;
     let mut rng = rand::rng();
