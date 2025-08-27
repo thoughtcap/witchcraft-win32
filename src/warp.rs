@@ -3,7 +3,7 @@
 use csv;
 use indicatif::ProgressBar;
 use rusqlite::{Connection, OpenFlags, Result as SQLResult, Statement};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -662,6 +662,11 @@ struct Record {
     body: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct CorpusMetaData {
+    key: String,
+}
+
 pub fn read_csv(db: &DB, csvname: &str) -> Result<()> {
     println!("register documents from CSV {}...", csvname);
 
@@ -673,7 +678,10 @@ pub fn read_csv(db: &DB, csvname: &str) -> Result<()> {
 
     for result in rdr.deserialize() {
         let record: Record = result?;
-        let metadata = json!({ "key": record.name }).to_string();
+        let metadata = CorpusMetaData {
+            key: record.name
+        };
+        let metadata = serde_json::to_string(&metadata)?;
         let body = record.body;
 
         let mut hasher = Sha256::new();
@@ -1155,7 +1163,7 @@ pub fn bulk_search(
     let file = File::create(outputname).unwrap();
     let mut writer = BufWriter::new(file);
 
-    let mut filename_query = db.query("SELECT metadata FROM document WHERE rowid = ?1");
+    let mut metadata_query = db.query("SELECT metadata FROM document WHERE rowid = ?1");
 
     for result in rdr.deserialize() {
         let record: (String, String) = result?;
@@ -1188,15 +1196,16 @@ pub fn bulk_search(
             sem_idxs
         };
 
-        let mut filenames = vec![];
+        let mut metadatas = vec![];
         for idx in fused {
-            let filename = filename_query.query_row((idx,), |row| Ok(row.get::<_, String>(0)?))?;
-            filenames.push(filename);
+            let metadata = metadata_query.query_row((idx,), |row| Ok(row.get::<_, String>(0)?))?;
+            metadatas.push(metadata);
         }
 
         write!(writer, "{}\t", key).unwrap();
-        for filename in &filenames {
-            write!(writer, "{},", filename).unwrap();
+        for metadata in &metadatas {
+            let data: CorpusMetaData = serde_json::from_str(metadata)?;
+            write!(writer, "{},", data.key).unwrap();
         }
         write!(writer, "\n").unwrap();
         writer.flush().unwrap();
