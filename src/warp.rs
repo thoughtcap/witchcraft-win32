@@ -1253,7 +1253,10 @@ pub fn bulk_search(
         };
 
         let sem_matches = if use_semantic {
+            let now = std::time::Instant::now();
             let qe = embedder.embed(&question)?.get(0)?;
+            qe.device().synchronize().unwrap();
+            println!("embedder took {} ms.", now.elapsed().as_millis());
             match_centroids(&db, &qe, 0.0, 100, None).unwrap()
         } else {
             [].to_vec()
