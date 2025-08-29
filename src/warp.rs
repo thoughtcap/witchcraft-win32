@@ -1246,6 +1246,7 @@ pub fn bulk_search(
 
     let mut metadata_query = db.query("SELECT metadata FROM document WHERE rowid = ?1");
     let mut histogram = histogram::Histogram::new(10000);
+    let mut embedder_histogram = histogram::Histogram::new(10000);
 
     for result in rdr.deserialize() {
         let record: (String, String) = result?;
@@ -1264,6 +1265,8 @@ pub fn bulk_search(
             let now = std::time::Instant::now();
             let qe = embedder.embed(&question)?.get(0)?;
             qe.device().synchronize().unwrap();
+            let embedder_latency_ms = now.elapsed().as_millis() as u32;
+            embedder_histogram.record(embedder_latency_ms);
             println!("embedder took {} ms.", now.elapsed().as_millis());
             match_centroids(&db, &qe, 0.0, 100, None).unwrap()
         } else {
@@ -1299,7 +1302,7 @@ pub fn bulk_search(
         write!(writer, "\n").unwrap();
         writer.flush().unwrap();
     }
-    let p95 = histogram.p95();
-    println!("p95 search latency = {} ms", p95);
+    println!("p95 embedder latency = {} ms", embedder_histogram.p95());
+    println!("p95 total search latency = {} ms", histogram.p95());
     Ok(())
 }
