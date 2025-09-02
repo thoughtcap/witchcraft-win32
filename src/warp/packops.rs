@@ -23,8 +23,8 @@ impl TensorPackOps for Tensor {
     to full [-1;1] range, as empirically residuals of normalized embeddings rarely exceed
     [-0.26:0.26] range.
 
-    The inverse operation is really slow, we should use a table and fold that into the dot
-    product calculations, like is done in the WARP paper.
+    The inverse operation is really slow, so we use a decoding table, as seen in
+    from_companded_q4_bytes()
 
     See also https://en.wikipedia.org/wiki/%CE%9C-law_algorithm
     */
