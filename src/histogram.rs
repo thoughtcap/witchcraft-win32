@@ -13,7 +13,7 @@ impl Histogram {
         }
     }
 
-    /// Record a value (panics if out of range)
+    /// Record a value (clamps if out of range)
     pub fn record(&mut self, v: u32) {
         let v = if v < self.max { v } else { self.max };
         self.counts[v as usize] += 1;
