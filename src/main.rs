@@ -22,8 +22,8 @@ struct CorpusMetaData {
     key: String,
 }
 
-pub fn read_csv(db: &DB, csvname: &str) -> Result<()> {
-    println!("register documents from CSV {}...", csvname);
+pub fn read_csv(db: &DB, csvname: std::path::PathBuf) -> Result<()> {
+    println!("register documents from CSV...");
 
     let file = File::open(csvname)?;
     let mut rdr = csv::ReaderBuilder::new()
@@ -49,8 +49,8 @@ pub fn read_csv(db: &DB, csvname: &str) -> Result<()> {
 pub fn bulk_search(
     db: &DB,
     embedder: &warp::Embedder,
-    csvname: &String,
-    outputname: &String,
+    csvname: std::path::PathBuf,
+    outputname: std::path::PathBuf,
     use_fulltext: bool,
     use_semantic: bool,
 ) -> Result<()> {
@@ -134,7 +134,8 @@ fn main() -> Result<()> {
     let mut cache = warp::EmbeddingsCache::new(1);
 
     if args.len() == 3 && args[1] == "readcsv" {
-        read_csv(&db, &args[2]).unwrap();
+        let csvname = &args[2];
+        read_csv(&db, csvname.into()).unwrap();
     } else if args.len() == 2 && &args[1] == "embed" {
         warp::embed_chunks(&db, &device).unwrap();
     } else if args.len() == 2 && &args[1] == "index" {
@@ -157,8 +158,8 @@ fn main() -> Result<()> {
         bulk_search(
             &db,
             &embedder,
-            &csvname,
-            &outputname,
+            csvname.into(),
+            outputname.into(),
             use_fulltext,
             use_semantic,
         )
