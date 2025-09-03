@@ -1,16 +1,13 @@
-#![allow(dead_code)]
-
-use indicatif::ProgressBar;
 use once_cell::sync::Lazy;
 use rusqlite::Statement;
 use std::collections::HashMap;
 use std::mem::size_of;
 use std::sync::RwLock;
 
-mod quantized_t5;
-mod t5;
-
+//mod t5;
 //use t5 as t5_encoder;
+
+mod quantized_t5;
 use quantized_t5 as t5_encoder;
 
 mod db;
@@ -39,12 +36,37 @@ pub fn make_device() -> Device {
     }
 }
 
+#[cfg(feature = "progress")]
+pub mod progress {
+    use indicatif::{ProgressBar};
+    pub struct Bar(pub ProgressBar);
+    pub fn new(len: u64) -> Bar {
+        let pb = ProgressBar::new(len);
+        Bar(pb)
+    }
+    impl Bar {
+        pub fn inc(&self, n: u64) { self.0.inc(n); }
+        pub fn finish(&self) { self.0.finish(); }
+    }
+}
+
+#[cfg(not(feature = "progress"))]
+pub mod progress {
+    #[derive(Clone, Copy)]
+    pub struct Bar;
+    pub fn new(_len: u64) -> Bar { Bar }
+    impl Bar {
+        pub fn inc(&self, _n: u64) {}
+        pub fn finish(&self) {}
+    }
+}
+
 fn kmeans(data: &Tensor, k: usize, max_iter: usize, device: &Device) -> Result<(Tensor, Tensor)> {
     let (m, n) = data.dims2()?;
     println!("kmeans k={} m={} n={}...", k, m, n);
 
     let total: u64 = (max_iter * k).try_into().unwrap();
-    let bar = ProgressBar::new(total);
+    let bar = progress::new(total);
 
     let mut rng = rand::rng();
     let centroid_idx = rand::seq::index::sample(&mut rng, m, k).into_vec();
@@ -102,7 +124,7 @@ fn write_buckets(db: &DB, centers: &Tensor, device: &Device) -> Result<()> {
         .query_row((EMBEDDING_DIM,), |row| Ok(row.get::<_, u32>(0)?))
         .unwrap();
     assert!(embeddings_count > 0);
-    let bar = ProgressBar::new(embeddings_count as u64);
+    let bar = progress::new(embeddings_count as u64);
 
     //let mut document_indices = vec![];
     let mut document_indices = Vec::<u32>::new();
