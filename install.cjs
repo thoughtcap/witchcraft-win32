@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/no-var-requires */
-const fs = require("fs");
-const path = require("path");
+const path = require('path');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 
@@ -12,7 +11,7 @@ async function run(command) {
   console.error(stderr);
 }
 
-async function build(name, version, platform, arch) {
+async function build(platform, arch) {
   if (platform == 'darwin') {
     await run(`cargo build --locked --release --target aarch64-apple-darwin --features accelerate`);
     await run(`cargo build --locked --release --target x86_64-apple-darwin --features accelerate`);
@@ -34,14 +33,12 @@ async function build(name, version, platform, arch) {
   }
 }
 
-const name = process.env.npm_package_name;
-const version = process.env.npm_package_version;
 const platform = process.env.npm_config_platform || process.platform;
 const arch = process.env.npm_config_arch || process.arch;
 
 if (process.env.ENABLE_WARP == '1') {
   console.log(`building Warp module for ${platform} ${arch}`);
-  build(name, version, platform, arch);
+  build(platform, arch);
 } else {
   console.log(`Not building Warp, set ENABLE_WARP=1 in environment to enable`);
 }

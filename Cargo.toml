@@ -17,7 +17,6 @@ path = "src/lib.rs"
 
 [dependencies]
 accelerate-src = { version = "0.3.2", optional = true }
-#candle-metal-kernels = { version = "0.9.1", optional = true }
 candle-metal-kernels = { git = "https://github.com/huggingface/candle", rev="03e9ce0e7248002f150bf40bb647116361020381", optional=true }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 ug-metal = { version = "0.4.0", optional = true }
@@ -53,9 +52,6 @@ candle-nn = { git = "https://github.com/huggingface/candle", rev="03e9ce0e724800
 
 [build-dependencies]
 napi-build = "2.2.3"
-
-#[package.metadata.napi]
-#ts-declarations = true
 
 [features]
 embed-assets = []

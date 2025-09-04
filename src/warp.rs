@@ -923,17 +923,13 @@ pub fn search(
     let q = q.split_whitespace().collect::<Vec<_>>().join(" ");
 
     let fts_idxs = if use_fulltext {
-        println!("Doing full text search for: `{}'", q);
         fulltext_search(&db, &q, sql_filter)?
     } else {
         [].to_vec()
     };
 
-    println!("Doing semantic search for: `{}'", q);
-
     let qe = match cache.get(&q) {
         Some(existing) => {
-            println!("found cached query");
             existing
         }
         None => {
@@ -970,7 +966,7 @@ pub fn search(
         })?;
         results.push((score, metadata, body));
     }
-    println!("search took {} ms end-to-end.", now.elapsed().as_millis());
+    println!("warp search took {} ms end-to-end.", now.elapsed().as_millis());
     Ok(results)
 }
 

@@ -31,7 +31,6 @@ impl Indexer {
                     db.add_doc(&arg1, &arg2).unwrap();
                 } else if command == "index" {
                     let count = warp::count_unindexed_chunks(&db).unwrap();
-                    println!("warp unindexed count {}", count);
                     if count >= 2048 {
                         warp::index_chunks(&db, &device).unwrap();
                     }
@@ -103,7 +102,7 @@ impl WarpInner {
         ) {
             Ok(v) => v,
             Err(e) => {
-                println!("error {} querying for {}", e, &q);
+                println!("error {} querying", e);
                 [].to_vec()
             }
         }
