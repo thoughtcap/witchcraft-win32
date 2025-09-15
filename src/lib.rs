@@ -257,17 +257,14 @@ impl<'env> ScopedTask<'env> for SearchTask {
     }
 
     fn resolve(&mut self, env: &'env Env, out: Self::Output) -> Result<Self::JsValue> {
-        // Outer array
         let mut outer: Array<'env> = env.create_array(out.len() as u32)?;
-        for (i, (score, a, b)) in out.into_iter().enumerate() {
-            // Triplet [number, string, string]
-            let mut triplet: Array<'env> = env.create_array(3)?;
-            triplet.set(0, score as f64)?; // numbers as f64
-            triplet.set(1, a)?; // String -> JS string
-            triplet.set(2, b)?;
-            outer.set(i as u32, triplet)?; // set the triplet into the outer array
+        for (i, (score, metadata, body)) in out.into_iter().enumerate() {
+            let mut obj = Object::new(env)?;
+            obj.set("score", score as f64)?;
+            obj.set("metadata", metadata)?;
+            obj.set("body", body)?;
+            outer.set(i as u32, obj)?;
         }
-        // Return Object<'env> (Array is an Object; coerce to Object)
         outer.coerce_to_object()
     }
 }
