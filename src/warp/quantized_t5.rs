@@ -599,26 +599,30 @@ impl T5EncoderModel {
 }
 
 use crate::embed_zst_asset;
-embed_zst_asset!(pub CONFIG, "assets/config.json.zst");
-embed_zst_asset!(pub TOKENIZER, "assets/tokenizer.json.zst");
-embed_zst_asset!(pub MODEL, "assets/xtr.gguf.zst");
+embed_zst_asset!(pub CONFIG, "config.json.zst");
+embed_zst_asset!(pub TOKENIZER, "tokenizer.json.zst");
+embed_zst_asset!(pub MODEL, "xtr.gguf.zst");
 
 pub struct T5ModelBuilder {
     config: Config,
 }
 
 impl T5ModelBuilder {
-    pub fn load() -> Result<(Self, Tokenizer)> {
-        let config: Config = serde_json::from_str(CONFIG.as_str()).unwrap();
-        let tokenizer = Tokenizer::from_bytes(TOKENIZER.bytes())
+    pub fn load(assets: &std::path::PathBuf) -> Result<(Self, Tokenizer)> {
+        let config: Config = serde_json::from_str(CONFIG.as_str(assets)).unwrap();
+        let tokenizer = Tokenizer::from_bytes(TOKENIZER.bytes(assets))
             .map_err(anyhow::Error::msg)
             .unwrap();
         Ok((Self { config }, tokenizer))
     }
 
-    pub fn build_encoder(&self, device: &Device) -> Result<T5EncoderModel> {
+    pub fn build_encoder(
+        &self,
+        device: &Device,
+        assets: &std::path::PathBuf,
+    ) -> Result<T5EncoderModel> {
         let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf_buffer(
-            MODEL.bytes(),
+            MODEL.bytes(assets),
             &device,
         )?;
         Ok(T5EncoderModel::load(vb, &self.config)?)

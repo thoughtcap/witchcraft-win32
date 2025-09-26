@@ -817,9 +817,7 @@ fn u8_to_vec_u32(bytes: &[u8]) -> Vec<u32> {
     u32s
 }
 
-pub fn embed_chunks(db: &DB, device: &Device, limit: Option<usize>) -> Result<usize> {
-    let embedder = Embedder::new(&device);
-
+pub fn embed_chunks(db: &DB, embedder: &Embedder, limit: Option<usize>) -> Result<usize> {
     let sql = format!(
         "SELECT
         document.hash,document.body
@@ -835,7 +833,7 @@ pub fn embed_chunks(db: &DB, device: &Device, limit: Option<usize>) -> Result<us
     );
     let mut query = db.query(&sql);
 
-    let embedding_iter = Gatherer::new(&mut query, &embedder);
+    let embedding_iter = Gatherer::new(&mut query, embedder);
     let mut count = 0;
     for (hash, embeddings) in embedding_iter {
         println!(
@@ -1003,7 +1001,10 @@ pub fn search(
         })?;
         results.push((score, metadata, body));
     }
-    println!("warp search took {} ms end-to-end.", now.elapsed().as_millis());
+    println!(
+        "warp search took {} ms end-to-end.",
+        now.elapsed().as_millis()
+    );
     Ok(results)
 }
 

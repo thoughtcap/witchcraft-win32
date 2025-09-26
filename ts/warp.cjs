@@ -1,6 +1,6 @@
 const warpNode = require('../target/release/warp.node');
 
-module.warp = new warpNode.Warp("mydb.sqlite");
+module.warp = new warpNode.Warp("mydb.sqlite", "assets");
 console.log("warp", module.warp);
 
 export async function search(query, threshold, top_k, filter) {

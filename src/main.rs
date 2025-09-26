@@ -127,14 +127,15 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     let mut db = DB::new("mydb.sqlite");
     let device = warp::make_device();
-    let embedder = warp::Embedder::new(&device);
+    let assets = std::path::PathBuf::from("assets");
+    let embedder = warp::Embedder::new(&device, &assets);
     let mut cache = warp::EmbeddingsCache::new(1);
 
     if args.len() == 3 && args[1] == "readcsv" {
         let csvname = &args[2];
         read_csv(&mut db, csvname.into()).unwrap();
     } else if args.len() == 2 && &args[1] == "embed" {
-        let _got = warp::embed_chunks(&db, &device, None).unwrap();
+        let _got = warp::embed_chunks(&db, &embedder, None).unwrap();
     } else if args.len() == 2 && &args[1] == "index" {
         warp::index_chunks(&db, &device).unwrap();
     } else if args.len() >= 3 && (args[1] == "query" || args[1] == "hybrid") {

@@ -167,12 +167,7 @@ impl DB {
         Ok(())
     }
 
-    pub fn add_chunk(
-        self: &Self,
-        hash: &str,
-        model: &str,
-        embeddings: &Vec<u8>,
-    ) {
+    pub fn add_chunk(self: &Self, hash: &str, model: &str, embeddings: &Vec<u8>) {
         self.connection
             .execute(
                 "INSERT OR REPLACE INTO chunk VALUES(?1, ?2, ?3)",

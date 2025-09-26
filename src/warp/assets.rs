@@ -39,23 +39,23 @@ impl Asset {
     }
 
     /// Return the decompressed bytes; performs work only on the first call.
-    pub fn bytes(&'static self) -> &'static [u8] {
+    pub fn bytes(&'static self, assets: &std::path::PathBuf) -> &'static [u8] {
         self.decompressed.get_or_init(|| {
             // 1. Obtain the compressed data according to build mode.
             #[cfg(feature = "embed-assets")]
             let compressed: Vec<u8> = self.compressed.to_vec();
 
             #[cfg(not(feature = "embed-assets"))]
-            let compressed: Vec<u8> =
-                std::fs::read(Path::new(self.path)).expect("failed to read compressed asset file");
+            let compressed: Vec<u8> = std::fs::read(Path::new(&assets.join(self.path)))
+                .expect("failed to read compressed asset file");
 
             // 2. Decompress the entire buffer.
             let mut cursor = Cursor::new(compressed);
             zstd::stream::decode_all(&mut cursor).expect("zstd decompression failed")
         })
     }
-    pub fn as_str(&'static self) -> &'static str {
-        std::str::from_utf8(self.bytes()).expect("asset is not valid UTF-8")
+    pub fn as_str(&'static self, assets: &std::path::PathBuf) -> &'static str {
+        std::str::from_utf8(self.bytes(assets)).expect("asset is not valid UTF-8")
     }
 }
 
@@ -74,8 +74,6 @@ macro_rules! embed_zst_asset {
         // --- Disk build (no default features) ---------------------------
         #[cfg(not(feature = "embed-assets"))]
         $vis static $name: $crate::warp::assets::Asset =
-            $crate::warp::assets::Asset::new_file(concat!(
-                env!("CARGO_MANIFEST_DIR"), "/", $path
-            ));
+            $crate::warp::assets::Asset::new_file($path);
     };
 }

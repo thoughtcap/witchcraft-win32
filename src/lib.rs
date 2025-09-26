@@ -48,12 +48,14 @@ fn drain_commands() -> bool {
 }
 
 impl Indexer {
-    pub fn new(db_name: String) -> Self {
+    pub fn new(db_name: String, assets: String) -> Self {
         let (tx, rx) = mpsc::channel::<Job>();
         let mut db = warp::DB::new(&db_name);
 
         let handle = thread::spawn(move || {
             let device = warp::make_device();
+            let assets = std::path::PathBuf::from(assets);
+            let embedder = warp::Embedder::new(&device, &assets);
             while let Ok(job) = rx.recv() {
                 match job {
                     Job::Clear => {
@@ -90,7 +92,7 @@ impl Indexer {
                         }
                     }
                     Job::Embed => loop {
-                        let got = warp::embed_chunks(&db, &device, Some(10)).unwrap();
+                        let got = warp::embed_chunks(&db, &embedder, Some(10)).unwrap();
                         if got == 0 || drain_commands() {
                             break;
                         }
@@ -104,8 +106,8 @@ impl Indexer {
             handle: Mutex::new(Some(handle)),
         }
     }
-    pub fn init_global(db_name: String) -> &'static Self {
-        INDEXER.get_or_init(|| Indexer::new(db_name))
+    pub fn init_global(db_name: String, assets: String) -> &'static Self {
+        INDEXER.get_or_init(|| Indexer::new(db_name, assets))
     }
 
     pub fn global() -> &'static Self {
@@ -170,11 +172,12 @@ struct WarpInner {
 }
 
 impl WarpInner {
-    pub fn new(db_name: String) -> Self {
-        let _indexer = Indexer::init_global(db_name.clone());
+    pub fn new(db_name: String, assets: String) -> Self {
+        let _indexer = Indexer::init_global(db_name.clone(), assets.clone());
         let db = warp::DB::new_reader(&db_name.clone());
         let device = warp::make_device();
-        let embedder = warp::Embedder::new(&device);
+        let assets = std::path::PathBuf::from(assets);
+        let embedder = warp::Embedder::new(&device, &assets);
         let cache = warp::EmbeddingsCache::new(16);
 
         Self {
@@ -230,9 +233,9 @@ impl WarpInner {
 }
 
 static INNER: OnceLock<Arc<Mutex<WarpInner>>> = OnceLock::new();
-fn inner(db_name: String) -> Arc<Mutex<WarpInner>> {
+fn inner(db_name: String, assets: String) -> Arc<Mutex<WarpInner>> {
     INNER
-        .get_or_init(|| Arc::new(Mutex::new(WarpInner::new(db_name))))
+        .get_or_init(|| Arc::new(Mutex::new(WarpInner::new(db_name, assets))))
         .clone()
 }
 
@@ -297,14 +300,25 @@ impl<'env> ScopedTask<'env> for ScoreTask {
 #[napi(js_name = "Warp")]
 pub struct Warp {
     db_name: String,
+    assets: String,
 }
 
 #[napi]
 impl Warp {
     #[napi(constructor)]
-    pub fn new(db_name: String) -> Self {
-        let _indexer = Indexer::init_global(db_name.clone());
-        Self { db_name: db_name }
+    pub fn new(db_name: String, assets: String) -> Self {
+        let cwd = std::env::current_dir().unwrap();
+        println!(
+            "warp running db=`{}' assets=`{}' cwd=`{}'",
+            db_name,
+            assets,
+            cwd.display()
+        );
+        let _indexer = Indexer::init_global(db_name.clone(), assets.clone());
+        Self {
+            db_name: db_name,
+            assets: assets,
+        }
     }
     #[napi]
     pub fn search(
@@ -315,7 +329,7 @@ impl Warp {
         sql_filter: String,
     ) -> AsyncTask<SearchTask> {
         AsyncTask::new(SearchTask {
-            inner: inner(self.db_name.clone()),
+            inner: inner(self.db_name.clone(), self.assets.clone()),
             q: q,
             threshold: threshold as f32,
             top_k: top_k as usize,
@@ -326,7 +340,7 @@ impl Warp {
     #[napi]
     pub fn score(&mut self, q: String, sentences: Vec<String>) -> AsyncTask<ScoreTask> {
         AsyncTask::new(ScoreTask {
-            inner: inner(self.db_name.clone()),
+            inner: inner(self.db_name.clone(), self.assets.clone()),
             q: q,
             sentences: sentences,
         })
