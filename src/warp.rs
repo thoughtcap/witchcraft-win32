@@ -905,9 +905,8 @@ pub fn index_chunks(db: &DB, device: &Device) -> Result<()> {
     if m < k {
         k = m / 4;
     }
-    let (centers, idxs) = kmeans(&matrix, k as usize, 5, &device)?;
+    let (centers, _idxs) = kmeans(&matrix, k as usize, 5, &device)?;
     println!("kmeans took {} ms.", now.elapsed().as_millis());
-    println!("idxs {}", idxs);
 
     println!("write buckets...");
     let now = std::time::Instant::now();
