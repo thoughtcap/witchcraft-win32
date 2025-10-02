@@ -24,7 +24,6 @@ enum Job {
         uuid: Uuid,
     },
     Index,
-    Embed,
     Clear,
     Shutdown,
 }
@@ -102,14 +101,33 @@ impl Indexer {
                             Err(v) => {
                                 println!("add_doc failed! {}", v);
                             }
-                        },
+                        }
                         Job::Remove { uuid } => match db.remove_doc(&uuid) {
                             Ok(()) => {}
                             Err(v) => {
                                 println!("remove_doc failed! {}", v);
                             }
-                        },
-                        Job::Index => {
+                        }
+                        Job::Index=> {
+                            let _ = db.refresh_ft();
+                            loop {
+                                match &embedder {
+                                    Some(embedder) => {
+                                        let got = match warp::embed_chunks(&db, &embedder, Some(10)) {
+                                            Ok(got) => got,
+                                            Err(_v) => {
+                                                break;
+                                            }
+                                        };
+                                        if got == 0 || drain_commands() {
+                                            break;
+                                        }
+                                    }
+                                    None => {
+                                        break;
+                                    }
+                                };
+                            }
                             if warp::count_unindexed_chunks(&db).unwrap_or(0) > 2048 {
                                 match warp::index_chunks(&db, &device) {
                                     Ok(()) => {}
@@ -119,24 +137,6 @@ impl Indexer {
                                 }
                             }
                         }
-                        Job::Embed => loop {
-                            match &embedder {
-                                Some(embedder) => {
-                                    let got = match warp::embed_chunks(&db, &embedder, Some(10)) {
-                                        Ok(got) => got,
-                                        Err(_v) => {
-                                            break;
-                                        }
-                                    };
-                                    if got == 0 || drain_commands() {
-                                        break;
-                                    }
-                                }
-                                None => {
-                                    break;
-                                }
-                            };
-                        },
                         _ => {}
                     }
                 }
@@ -171,12 +171,6 @@ impl Indexer {
     pub fn remove(&self, uuid: Uuid) {
         if accepting_commands() {
             let _ = self.tx.send(Job::Remove { uuid });
-        }
-    }
-
-    pub fn embed(&self) {
-        if accepting_commands() {
-            let _ = self.tx.send(Job::Embed);
         }
     }
 
@@ -410,11 +404,6 @@ impl Warp {
     pub fn remove(&self, uuid: String) {
         let uuid = Uuid::parse_str(&uuid).unwrap();
         Indexer::global().remove(uuid);
-    }
-
-    #[napi]
-    pub fn embed(&self) {
-        Indexer::global().embed();
     }
 
     #[napi]

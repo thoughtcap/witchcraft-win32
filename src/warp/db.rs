@@ -113,6 +113,12 @@ impl DB {
         Ok(())
     }
 
+
+    pub fn refresh_ft(&mut self) -> SQLResult<()> {
+        self.execute("INSERT INTO document_fts(document_fts) VALUES('rebuild')")?;
+        Ok(())
+    }
+
     pub fn clear(&mut self) {
         self.remove_on_shutdown = true;
         let _ = self.clear_inner();
