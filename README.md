@@ -42,13 +42,14 @@ run:
 For your convenience, nfcorpus.tsv is included, so you can just do this:
 
 ```
-$ cargo run --release readcsv datasets/nfcorpus.tsv
+export RUN="cargo run --release --features metal,accelerate --bin warp-cli"
+$ $RUN readcsv datasets/nfcorpus.tsv
 ```
 
 With all the documents in place, we can now create embeddings for them, with:
 
 ```
-$ cargo run --release embed
+$ $RUN embed
 ```
 
 This will look for documents that lack embeddings, and create and insert them.
@@ -60,14 +61,14 @@ the expense of bloating up the database.
 Next we create the index over the embeddings, with:
 
 ```
-$ cargo run --release index
+$ $RUN index
 ```
 
 Which will scan the documents folder and create embedddings for everything. On
 macOS, you can make it run faster with:
 
 ```
-$ cargo run --release --features accelerate index
+$ $RUN --features accelerate index
 ```
 
 This will use hardware acceleration for the embeddings as well as for other
@@ -83,7 +84,7 @@ everything, it is not involved in the actual index search.
 When you have the index, you can query it with:
 
 ```
-$ cargo run --release query "does milk intake cause acne in teenagers?"
+$ $RUN query "does milk intake cause acne in teenagers?"
 ```
 
 And hopefully get a bunch of relevant answers. You can also try other
