@@ -1,5 +1,5 @@
 use iso8601_timestamp::Timestamp;
-use log::warn;
+use log::{error, warn};
 use rusqlite::{Connection, OpenFlags, Result as SQLResult, Statement};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -178,8 +178,13 @@ impl DB {
     }
 
     pub fn execute(self: &Self, sql: &str) -> SQLResult<()> {
-        self.connection.execute(sql, ()).unwrap();
-        Ok(())
+        match self.connection.execute(sql, ()) {
+            Ok(_v) => Ok(()),
+            Err(v) => {
+                error!("failed to execute SQL {v}");
+                Err(v.into())
+            }
+        }
     }
 
     pub fn query(self: &Self, sql: &str) -> SQLResult<Statement<'_>> {

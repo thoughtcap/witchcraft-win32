@@ -836,17 +836,29 @@ pub fn match_centroids(
         }
     );
 
-    let mut scored_documents_query = db.query(&sql)?;
-    let results = scored_documents_query
-        .query_map((top_k,), |row| {
-            Ok((
-                row.get::<_, f32>(0)?,
-                row.get::<_, u32>(1)?,
-                row.get::<_, u32>(2)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    let results_status: Result<Vec<(f32, u32, u32)>> = {
+        let mut scored_documents_query = db.query(&sql)?;
+        let results = scored_documents_query
+            .query_map((top_k,), |row| {
+                Ok((
+                    row.get::<_, f32>(0)?,
+                    row.get::<_, u32>(1)?,
+                    row.get::<_, u32>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
+    };
+
     db.execute("DROP TABLE temp2")?;
+
+    let results = match results_status {
+        Ok(results) => results,
+        Err(v) => {
+            warn!("scoring query failed {}", v);
+            [].into()
+        }
+    };
 
     debug!(
         "reading scored and filtered document ids from DB took {} ms",
