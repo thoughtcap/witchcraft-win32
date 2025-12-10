@@ -42,7 +42,7 @@ static STATSALLOCATOR: StatsAllocator = StatsAllocator;
 fn memory_stats() {
     let allocated = ALLOCATED.load(Ordering::Relaxed) as f64;
     let mb = (1 << 20) as f64;
-    stats("megabytes-allocated", allocated / mb);
+    stats("allocated-megabytes", (allocated / mb).round());
 }
 
 #[napi(object)]
@@ -299,6 +299,18 @@ impl Indexer {
                                     }
                                 }
                                 stats("indexing-time-ms", now.elapsed().as_millis() as f64);
+                                match db.file_size() {
+                                    Ok(size) => {
+                                        let mb = (1 << 20) as f64;
+                                        stats(
+                                            "database-size-megabytes",
+                                            (size as f64 / mb).round(),
+                                        );
+                                    }
+                                    Err(v) => {
+                                        warn!("db.file_size() failed! {}", v);
+                                    }
+                                }
                             }
                             memory_stats();
                         }

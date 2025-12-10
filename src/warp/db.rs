@@ -183,6 +183,10 @@ impl DB {
         }
     }
 
+    pub fn file_size(&self) -> std::io::Result<u64> {
+        std::fs::metadata(&self.db_fn).map(|meta| meta.len())
+    }
+
     pub fn execute(self: &Self, sql: &str) -> SQLResult<()> {
         match self.connection.execute(sql, ()) {
             Ok(_v) => Ok(()),
