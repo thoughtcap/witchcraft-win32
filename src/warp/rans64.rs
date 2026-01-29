@@ -192,7 +192,7 @@ impl fmt::Display for RansDecodeError {
         match self {
             RansDecodeError::BadSymbol => write!(f, "rANS decode bad symbol"),
             RansDecodeError::Underflow => write!(f, "rANS decode underflow"),
-            RansDecodeError::Corrupt   => write!(f, "rANS corrupt stream"),
+            RansDecodeError::Corrupt => write!(f, "rANS corrupt stream"),
         }
     }
 }
@@ -243,7 +243,11 @@ impl RansDecoder {
         if buf.len() < 8 {
             return Err(RansDecodeError::Underflow);
         }
-        let mut dec = Self { state: 0, buf, idx: 0 };
+        let mut dec = Self {
+            state: 0,
+            buf,
+            idx: 0,
+        };
         dec.init_state()?;
         Ok(dec)
     }
@@ -272,11 +276,7 @@ impl RansDecoder {
 
     /// Advance by one symbol, returning an error instead of panicking on bad data.
     #[inline]
-    pub fn advance(
-        &mut self,
-        sym: &RansDecSymbol,
-        scale_bits: u32,
-    ) -> Result<(), RansDecodeError> {
+    pub fn advance(&mut self, sym: &RansDecSymbol, scale_bits: u32) -> Result<(), RansDecodeError> {
         let mask = (1u64 << scale_bits) - 1;
 
         // s, x = D(x)  (wrapping semantics, like the C code)

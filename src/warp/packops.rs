@@ -272,7 +272,8 @@ impl TensorPackOps for Tensor {
             bytes.extend_from_slice(&(hist.len() as u16).to_ne_bytes());
 
             // Use Vec instead of HashMap for faster lookup during encoding
-            let mut q2sym: Vec<Option<rans64::RansEncSymbol>> = vec![None; (max_symbol + 1) as usize];
+            let mut q2sym: Vec<Option<rans64::RansEncSymbol>> =
+                vec![None; (max_symbol + 1) as usize];
             let mut cum = 0u32;
 
             for &(q, freq) in &hist {
@@ -331,7 +332,8 @@ impl TensorPackOps for Tensor {
 
             // Use a sentinel value for unused symbols (0 freq, 0 start is safe but never used)
             let default_sym = rans64::RansDecSymbol::new(0, 1)?;
-            let mut q2sym: Vec<rans64::RansDecSymbol> = vec![default_sym; (max_symbol + 1) as usize];
+            let mut q2sym: Vec<rans64::RansDecSymbol> =
+                vec![default_sym; (max_symbol + 1) as usize];
 
             for i in 0..symbols_count {
                 let symbol = pairs[2 * i as usize];
