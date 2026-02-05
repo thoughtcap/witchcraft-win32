@@ -10,7 +10,7 @@
 //! - Cross-platform support (Windows, macOS)
 //! - Compatible with existing embedder interface
 
-use log::{debug, info};
+use log::debug;
 use crate::embed_zst_asset;
 use anyhow::{anyhow, Result};
 use candle_core::{Device, Tensor};
@@ -261,7 +261,6 @@ impl T5EncoderModel {
         let output_tensor = Tensor::from_vec(output_data, &output_dims[..], &self.device)
             .map_err(|e| anyhow!("failed to create output Candle tensor: {}", e))?;
 
-        //info!("got {}", output_tensor);
         Ok(output_tensor)
     }
 
