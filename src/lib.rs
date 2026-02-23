@@ -141,37 +141,50 @@ fn kmeans(data: &Tensor, k: usize, max_iter: usize, device: &Device) -> Result<T
     let centroid_idx_tensor = centroid_idx_tensor.to_device(data.device())?;
     let mut centers = data.index_select(&centroid_idx_tensor, 0)?;
 
+    // Pull data out once; kmeans always runs on CPU.
+    let data_flat = data.flatten_all()?.to_vec1::<f32>()?;
+
     for _ in 0..max_iter {
-        // Use batched matmul+argmax to avoid materializing huge [m, k] matrix
         let cluster_assignments = matmul_argmax_batched(&data, &centers.transpose(D::Minus1, D::Minus2)?, 1024)?;
-        let mut centers_vec = vec![];
+        let assignments = cluster_assignments.to_vec1::<u32>()?;
+
+        // Single O(m × n) pass: accumulate per-cluster sums directly into a
+        // flat Vec<f32>, avoiding O(k × m) scans and k separate tensor ops.
+        let mut sums   = vec![0f32; k * n];
+        let mut counts = vec![0u32; k];
+        for (j, &c) in assignments.iter().enumerate() {
+            let c = c as usize;
+            counts[c] += 1;
+            let src = &data_flat[j * n..(j + 1) * n];
+            let dst = &mut sums[c * n..(c + 1) * n];
+            for (d, s) in dst.iter_mut().zip(src) {
+                *d += s;
+            }
+        }
+
+        // Normalize each cluster sum; reinit empty clusters from a random point.
+        let mut centers_flat = vec![0f32; k * n];
         for i in 0..k {
-            let mut indices = vec![];
-            cluster_assignments
-                .to_vec1::<u32>()?
-                .iter()
-                .enumerate()
-                .for_each(|(j, x)| {
-                    if *x == i as u32 {
-                        indices.push(j as u32);
-                    }
-                });
-            if indices.len() > 0 {
-                let indices = Tensor::from_slice(indices.as_slice(), (indices.len(),), device)?;
-                let indices = indices.to_device(data.device())?;
-                let cluster_data = data.index_select(&indices, 0)?;
-                let sum = cluster_data.sum(0)?;
-                let normalized = sum.broadcast_div(&sum.sqr()?.sum_keepdim(0)?.sqrt()?);
-                centers_vec.push(normalized?);
+            let src = &sums[i * n..(i + 1) * n];
+            let dst = &mut centers_flat[i * n..(i + 1) * n];
+            let (emb, owned);
+            if counts[i] > 0 {
+                emb = src;
             } else {
                 let idx = rand::seq::index::sample(&mut rng, m, 1).into_vec()[0];
-                let center = data.get(idx)?;
-                let normalized = center.broadcast_div(&center.sqr()?.sum_keepdim(0)?.sqrt()?);
-                centers_vec.push(normalized?);
+                owned = data_flat[idx * n..(idx + 1) * n].to_vec();
+                emb = &owned;
             }
-            bar.inc(1);
+            let norm: f32 = emb.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                for (d, e) in dst.iter_mut().zip(emb) { *d = e / norm; }
+            } else {
+                dst.copy_from_slice(emb);
+            }
         }
-        centers = Tensor::stack(centers_vec.as_slice(), 0)?;
+
+        centers = Tensor::from_vec(centers_flat, (k, n), device)?;
+        bar.inc(k as u64);
     }
     bar.finish();
     Ok(centers)
