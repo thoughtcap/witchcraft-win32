@@ -10,7 +10,7 @@
 //! - Cross-platform support (Windows, macOS)
 //! - Compatible with existing embedder interface
 
-use crate::embed_zst_asset;
+use crate::{embed_raw_asset, embed_zst_asset};
 use anyhow::{anyhow, Result};
 use candle_core::{Device, Tensor};
 use openvino::{Core, DeviceType, InferRequest, Shape};
@@ -18,12 +18,12 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
-// Asset definitions - zstd-compressed model files
+// Asset definitions
 embed_zst_asset!(pub TOKENIZER, "tokenizer.json.zst");
 
-// INT4 quantized model (98.9% accuracy, 6.38x compression)
-embed_zst_asset!(pub MODEL_INT4_XML, "xtr-ov-int4.xml.zst");
-embed_zst_asset!(pub MODEL_INT4_BIN, "xtr-ov-int4.bin.zst");
+// OpenVINO model files
+embed_zst_asset!(pub MODEL_INT4_XML, "xtr-ov-int4.xml.zst"); // XML is compressed (small)
+embed_raw_asset!(pub MODEL_INT4_BIN, "xtr-ov-int4.bin"); // BIN is uncompressed (large, memory-mapped)
 
 pub struct T5ModelBuilder {
 }
@@ -67,31 +67,51 @@ impl T5ModelBuilder {
 
     /// Build the T5 encoder model using OpenVINO with INT4 quantization.
     pub fn build_encoder(&self, device: &Device, assets: &PathBuf) -> Result<T5EncoderModel> {
-        // Decompress model files directly to a temp directory.
-        // OpenVINO's read_model API requires file paths, and streaming avoids
-        // buffering the full ~130 MB payload in RAM before writing.
-        let temp_dir = tempfile::tempdir()
-            .map_err(|e| anyhow!("failed to create temp directory: {}", e))?;
-        let xml_path = temp_dir.path().join("model-int4.xml");
-        let bin_path = temp_dir.path().join("model-int4.bin");
-
-        log::info!("decompressing OpenVINO model files...");
-        MODEL_INT4_XML.decompress_to_file(assets, &xml_path)
-            .map_err(|_| anyhow!("failed to decompress INT4 MODEL_XML"))?;
-        MODEL_INT4_BIN.decompress_to_file(assets, &bin_path)
-            .map_err(|_| anyhow!("failed to decompress INT4 MODEL_BIN"))?;
-
         // Initialize OpenVINO Core
         let mut core = Core::new()
             .map_err(|e| anyhow!("failed to create OpenVINO Core: {:?}", e))?;
 
-        // Read the model
-        let model = core
-            .read_model_from_file(
+        // Load model files
+        #[cfg(feature = "embed-assets")]
+        let model = {
+            log::info!("loading embedded OpenVINO model...");
+            // For embedded assets, write to temp files since OpenVINO needs file paths
+            let temp_dir = tempfile::tempdir()
+                .map_err(|e| anyhow!("failed to create temp directory: {}", e))?;
+            let xml_path = temp_dir.path().join("model-int4.xml");
+            let bin_path = temp_dir.path().join("model-int4.bin");
+
+            std::fs::write(&xml_path, MODEL_INT4_XML.bytes(assets)?)
+                .map_err(|e| anyhow!("failed to write XML: {}", e))?;
+            std::fs::write(&bin_path, MODEL_INT4_BIN.bytes())
+                .map_err(|e| anyhow!("failed to write BIN: {}", e))?;
+
+            core.read_model_from_file(
                 xml_path.to_str().ok_or_else(|| anyhow!("invalid path"))?,
                 bin_path.to_str().ok_or_else(|| anyhow!("invalid path"))?,
             )
-            .map_err(|e| anyhow!("failed to read OpenVINO model: {:?}", e))?;
+            .map_err(|e| anyhow!("failed to read OpenVINO model: {:?}", e))?
+        };
+
+        #[cfg(not(feature = "embed-assets"))]
+        let model = {
+            log::info!("loading OpenVINO model...");
+            // Decompress XML to temp (small), use uncompressed BIN directly (large, memory-mapped by OpenVINO)
+            let temp_dir = tempfile::tempdir()
+                .map_err(|e| anyhow!("failed to create temp directory: {}", e))?;
+            let xml_path = temp_dir.path().join("model-int4.xml");
+
+            MODEL_INT4_XML.decompress_to_file(assets, &xml_path)
+                .map_err(|_| anyhow!("failed to decompress XML"))?;
+
+            let bin_path = MODEL_INT4_BIN.path(assets);
+
+            core.read_model_from_file(
+                xml_path.to_str().ok_or_else(|| anyhow!("invalid XML path"))?,
+                bin_path.to_str().ok_or_else(|| anyhow!("invalid BIN path"))?,
+            )
+            .map_err(|e| anyhow!("failed to read OpenVINO model: {:?}", e))?
+        };
 
         // Determine OpenVINO device
         // Default to CPU for INT4 models - GPU has NaN issues with real text inputs
@@ -119,8 +139,6 @@ impl T5ModelBuilder {
             .create_infer_request()
             .map_err(|e| anyhow!("failed to create inference request: {:?}", e))?;
 
-        // Temporary files will be automatically cleaned up when temp_dir is dropped
-
         Ok(T5EncoderModel {
             ov_infer_request: RefCell::new(infer_request),
             device: device.clone(),
@@ -142,6 +160,7 @@ fn bucket_size(n: usize) -> usize {
 /// This struct wraps an OpenVINO compiled model and inference request,
 /// while maintaining a Candle Device for API compatibility.
 /// Uses RefCell for interior mutability of the inference request.
+/// OpenVINO internally memory-maps model files for efficient loading.
 pub struct T5EncoderModel {
     ov_infer_request: RefCell<InferRequest>,
     device: Device,

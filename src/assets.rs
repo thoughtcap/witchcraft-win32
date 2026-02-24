@@ -103,3 +103,52 @@ macro_rules! embed_zst_asset {
             $crate::assets::Asset::new_file($path);
     };
 }
+
+/// A raw (uncompressed) asset that can be memory-mapped.
+pub struct RawAsset {
+    #[cfg(feature = "embed-assets")]
+    data: &'static [u8],
+
+    #[cfg(not(feature = "embed-assets"))]
+    path: &'static str,
+}
+
+impl RawAsset {
+    #[cfg(feature = "embed-assets")]
+    pub const fn new_embedded(data: &'static [u8]) -> Self {
+        Self { data }
+    }
+
+    #[cfg(not(feature = "embed-assets"))]
+    pub const fn new_file(path: &'static str) -> Self {
+        Self { path }
+    }
+
+    /// Get the raw bytes. For embedded assets, returns the static slice.
+    /// For file-based assets, caller should memory-map the file directly.
+    #[cfg(feature = "embed-assets")]
+    pub fn bytes(&'static self) -> &'static [u8] {
+        self.data
+    }
+
+    /// Get the file path for non-embedded assets
+    #[cfg(not(feature = "embed-assets"))]
+    pub fn path(&self, assets: &std::path::PathBuf) -> std::path::PathBuf {
+        assets.join(self.path)
+    }
+}
+
+#[macro_export]
+macro_rules! embed_raw_asset {
+    ($vis:vis $name:ident, $path:literal) => {
+        #[cfg(feature = "embed-assets")]
+        $vis static $name: $crate::assets::RawAsset =
+            $crate::assets::RawAsset::new_embedded(include_bytes!(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/assets/", $path)
+            ));
+
+        #[cfg(not(feature = "embed-assets"))]
+        $vis static $name: $crate::assets::RawAsset =
+            $crate::assets::RawAsset::new_file($path);
+    };
+}
