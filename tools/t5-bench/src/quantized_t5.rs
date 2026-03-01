@@ -214,6 +214,9 @@ impl Module for T5LayerFF {
             Some(dense_act) => dense_act.forward(&ys)?,
             None => self.gated_dense_act.as_ref().unwrap().forward(&ys)?,
         };
+        #[cfg(feature = "fused-gelu")]
+        let xs = crate::fused_matmul::fast_add(xs, &ys)?;
+        #[cfg(not(feature = "fused-gelu"))]
         let xs = (xs + ys)?;
         Ok(xs)
     }
@@ -397,6 +400,9 @@ impl T5LayerSelfAttention {
         let (ys, position_bias) =
             self.self_attention
                 .forward(&normed_xs, position_bias, None, None)?;
+        #[cfg(feature = "fused-gelu")]
+        let ys = crate::fused_matmul::fast_add(xs, &ys)?;
+        #[cfg(not(feature = "fused-gelu"))]
         let ys = (xs + ys)?;
         Ok((ys, position_bias))
     }
