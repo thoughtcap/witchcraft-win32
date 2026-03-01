@@ -78,11 +78,10 @@ pub fn read_csv(db: &mut DB, csvname: std::path::PathBuf) -> Result<()> {
 
 pub fn bulk_search(
     db: &DB,
-    embedder: &warp::Embedder,
+    embedder: Option<&warp::Embedder>,
     csvname: std::path::PathBuf,
     outputname: std::path::PathBuf,
     use_fulltext: bool,
-    use_semantic: bool,
 ) -> Result<()> {
     let file = File::open(csvname)?;
     let mut rdr = csv::ReaderBuilder::new()
@@ -115,7 +114,7 @@ pub fn bulk_search(
             debug!("fulltext search took {} ms.", fts_start.elapsed().as_millis());
         }
 
-        let sem_matches = if use_semantic {
+        let sem_matches = if let Some(embedder) = embedder {
             let now = std::time::Instant::now();
             let (qe, _offsets) = embedder.embed(&question)?;
             let qe = qe.get(0)?;
@@ -160,7 +159,9 @@ pub fn bulk_search(
         write!(writer, "\n").unwrap();
         writer.flush().unwrap();
     }
-    println!("p95 embedder latency = {} ms", embedder_histogram.p95());
+    if embedder.is_some() {
+        println!("p95 embedder latency = {} ms", embedder_histogram.p95());
+    }
     println!("p95 total search latency = {} ms", histogram.p95());
     Ok(())
 }
@@ -175,27 +176,30 @@ fn main() -> Result<()> {
     info!("FMA instructions enabled");
 
     let args: Vec<String> = env::args().collect();
-    let device = warp::make_device();
     let assets = std::path::PathBuf::from("assets");
-    let embedder = warp::Embedder::new(&device, &assets).unwrap();
-    let mut cache = warp::EmbeddingsCache::new(1);
-    let db_name = "mydb.sqlite";
-    let db_name = std::path::PathBuf::from(db_name);
+    let db_name = std::path::PathBuf::from("mydb.sqlite");
 
     if args.len() == 3 && args[1] == "readcsv" {
         let mut db = DB::new(db_name).unwrap();
         let csvname = &args[2];
         read_csv(&mut db, csvname.into()).unwrap();
     } else if args.len() == 2 && &args[1] == "embed" {
+        let device = warp::make_device();
+        let embedder = warp::Embedder::new(&device, &assets).unwrap();
         let db = DB::new(db_name).unwrap();
         let _got = warp::embed_chunks(&db, &embedder, None).unwrap();
     } else if args.len() == 2 && &args[1] == "index" {
+        let device = warp::make_device();
         let db = DB::new(db_name).unwrap();
         warp::index_chunks(&db, &device).unwrap();
     } else if args.len() == 2 && &args[1] == "reindex" {
+        let device = warp::make_device();
         let db = DB::new(db_name).unwrap();
         warp::full_index(&db, &device).unwrap();
     } else if args.len() >= 3 && (args[1] == "query" || args[1] == "hybrid") {
+        let device = warp::make_device();
+        let embedder = warp::Embedder::new(&device, &assets).unwrap();
+        let mut cache = warp::EmbeddingsCache::new(1);
         let db = DB::new_reader(db_name).unwrap();
         let q = &args[2..].join(" ");
         let use_fulltext = args[1] == "hybrid";
@@ -210,19 +214,26 @@ fn main() -> Result<()> {
     {
         let db = DB::new_reader(db_name).unwrap();
         let use_fulltext = args[1] == "hybridcsv" || args[1] == "fulltextcsv";
-        let use_semantic = args[1] != "fulltextcsv";
+        let embedder = if args[1] != "fulltextcsv" {
+            let device = warp::make_device();
+            Some(warp::Embedder::new(&device, &assets).unwrap())
+        } else {
+            None
+        };
         let csvname = &args[2];
         let outputname = &args[3];
         bulk_search(
             &db,
-            &embedder,
+            embedder.as_ref(),
             csvname.into(),
             outputname.into(),
             use_fulltext,
-            use_semantic,
         )
         .unwrap();
     } else if args.len() >= 4 && &args[1] == "score" {
+        let device = warp::make_device();
+        let embedder = warp::Embedder::new(&device, &assets).unwrap();
+        let mut cache = warp::EmbeddingsCache::new(1);
         let sentences: Vec<String> = std::env::args().skip(3).collect();
         let scores =
             warp::score_query_sentences(&embedder, &mut cache, &args[2], &sentences).unwrap();
