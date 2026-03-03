@@ -689,7 +689,6 @@ impl T5EncoderModel {
 
 embed_zst_asset!(pub CONFIG,    "config.json.zst");
 embed_zst_asset!(pub TOKENIZER, "tokenizer.json.zst");
-embed_zst_asset!(pub MODEL,     "xtr.gguf.zst");
 
 pub struct T5ModelBuilder {
     config: Config,
@@ -729,16 +728,11 @@ impl T5ModelBuilder {
         device: &Device,
         assets: &std::path::PathBuf,
     ) -> candle_core::Result<T5EncoderModel> {
-        // MODEL: bytes -> gguf VarBuilder
-        let model_bytes = MODEL.bytes(assets).map_err(|_| {
-            Error::new(
-                ErrorKind::Other,
-                "failed to get decompressed bytes for MODEL",
-            )
-        })?;
+        // MODEL: mmap GGUF file directly
+        let model_path = assets.join("xtr.gguf");
 
-        let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf_buffer(
-            model_bytes,
+        let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(
+            &model_path,
             device,
         )?;
 

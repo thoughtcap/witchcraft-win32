@@ -36,14 +36,13 @@ fn bench_candle(assets: &PathBuf, tokenizer: &tokenizers::Tokenizer, sizes: &[us
     let config: quantized_t5::Config = serde_json::from_slice(&cfg_bytes)?;
 
     let t0 = Instant::now();
-    let compressed = std::fs::read(assets.join("xtr.gguf.zst"))?;
-    let model_bytes = zstd::stream::decode_all(std::io::Cursor::new(compressed))?;
-    let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf_buffer(
-        &model_bytes,
+    let model_path = assets.join("xtr.gguf");
+    let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(
+        &model_path,
         &device,
     )?;
     let model = quantized_t5::T5EncoderModel::load(vb, &config)?;
-    eprintln!("candle: model loaded in {:.0?}", t0.elapsed());
+    eprintln!("candle: model loaded in {:.0?} (using mmap)", t0.elapsed());
 
     let base = "Bananas are berries but strawberries are not. Octopuses have three hearts and blue blood. A day on Venus is longer than a year on Venus. There are more trees on Earth than stars in the Milky Way.";
 
