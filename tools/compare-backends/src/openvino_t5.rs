@@ -38,7 +38,7 @@ impl T5ModelBuilder {
             .map_err(|e| anyhow!("failed to create OpenVINO Core: {:?}", e))?;
 
         // Load model files directly from assets directory
-        log::info!("loading OpenVINO model...");
+        eprintln!("loading OpenVINO model...");
         let xml_path = assets.join("xtr-ov-int4.xml");
         let bin_path = assets.join("xtr-ov-int4.bin");
 

@@ -34,32 +34,46 @@ fn compute_similarity(a: &Tensor, b: &Tensor) -> Result<f32> {
     Ok(similarity)
 }
 
-fn compare_embeddings(emb1: &Tensor, emb2: &Tensor) -> Result<EmbeddingComparison> {
-    // emb1 and emb2 should be [1, seq_len, dim]
-    let emb1 = emb1.squeeze(0)?; // [seq_len, dim]
-    let emb2 = emb2.squeeze(0)?; // [seq_len, dim]
+struct VectorDetail {
+    position: usize,
+    similarity: f32,
+    norm_a: f32,
+    norm_b: f32,
+}
 
+fn compare_embeddings_detailed(emb1: &Tensor, emb2: &Tensor) -> Result<(EmbeddingComparison, Vec<VectorDetail>)> {
+    let emb1 = emb1.squeeze(0)?;
+    let emb2 = emb2.squeeze(0)?;
     let (seq_len, _dim) = emb1.dims2()?;
 
     let mut similarities = Vec::new();
+    let mut details = Vec::new();
 
     for i in 0..seq_len {
         let v1 = emb1.get(i)?;
         let v2 = emb2.get(i)?;
+        let norm_a = v1.sqr()?.sum_all()?.sqrt()?.to_scalar::<f32>()?;
+        let norm_b = v2.sqr()?.sum_all()?.sqrt()?.to_scalar::<f32>()?;
         let sim = compute_similarity(&v1, &v2)?;
         similarities.push(sim);
+        details.push(VectorDetail { position: i, similarity: sim, norm_a, norm_b });
     }
 
     let min_sim = similarities.iter().cloned().fold(f32::INFINITY, f32::min);
     let max_sim = similarities.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let avg_sim = similarities.iter().sum::<f32>() / similarities.len() as f32;
 
-    Ok(EmbeddingComparison {
+    Ok((EmbeddingComparison {
         min_similarity: min_sim,
         max_similarity: max_sim,
         avg_similarity: avg_sim,
         total_vectors: seq_len,
-    })
+    }, details))
+}
+
+fn compare_embeddings(emb1: &Tensor, emb2: &Tensor) -> Result<EmbeddingComparison> {
+    let (comp, _) = compare_embeddings_detailed(emb1, emb2)?;
+    Ok(comp)
 }
 
 fn compare_quantized_backends(
@@ -195,6 +209,12 @@ fn compare_quantized_vs_openvino(
     let mut all_min_sims = Vec::new();
     let mut all_avg_sims = Vec::new();
     let mut doc_count = 0;
+    let outlier_threshold = 0.92;
+
+    // Collect all outliers across docs: (doc_id, token_text, position, sim, norm_q, norm_ov, seq_len)
+    let mut outliers: Vec<(String, String, usize, f32, f32, f32, usize)> = Vec::new();
+    // Histogram of similarities in 0.05-wide buckets from 0.70 to 1.00
+    let mut sim_histogram = [0u64; 7]; // [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00)
 
     for result in rdr.records() {
         let record = result?;
@@ -205,24 +225,38 @@ fn compare_quantized_vs_openvino(
         let doc_id = &record[0];
         let text = &record[1];
 
-        // Tokenize
         let encoding = tokenizer.encode(text, true)
             .map_err(|e| anyhow::anyhow!("encoding failed: {e}"))?;
         let ids = encoding.get_ids();
+        let tokens = encoding.get_tokens();
 
-        // Skip empty or very long documents
         if ids.is_empty() || ids.len() > 512 {
             continue;
         }
 
         let input = Tensor::new(ids, &device)?.unsqueeze(0)?;
 
-        // Generate embeddings from both backends
         let emb_q = quantized_model.forward(&input)?;
         let emb_ov = ov_model.forward(&input)?;
 
-        // Compare
-        let comparison = compare_embeddings(&emb_q, &emb_ov)?;
+        let (comparison, details) = compare_embeddings_detailed(&emb_q, &emb_ov)?;
+
+        for d in &details {
+            // Histogram
+            let bucket = ((d.similarity - 0.70) / 0.05).floor() as i32;
+            let bucket = bucket.clamp(0, 6) as usize;
+            if d.similarity >= 0.70 {
+                sim_histogram[bucket] += 1;
+            }
+
+            if d.similarity < outlier_threshold {
+                let tok = tokens.get(d.position).cloned().unwrap_or_else(|| "?".into());
+                outliers.push((
+                    doc_id.to_string(), tok, d.position, d.similarity,
+                    d.norm_a, d.norm_b, details.len(),
+                ));
+            }
+        }
 
         all_min_sims.push(comparison.min_similarity);
         all_avg_sims.push(comparison.avg_similarity);
@@ -241,11 +275,10 @@ fn compare_quantized_vs_openvino(
         }
 
         if doc_count >= 50 {
-            break; // Limit to first 50 documents
+            break;
         }
     }
 
-    // Overall statistics
     let overall_min = all_min_sims.iter().cloned().fold(f32::INFINITY, f32::min);
     let overall_avg_min = all_min_sims.iter().sum::<f32>() / all_min_sims.len() as f32;
     let overall_avg = all_avg_sims.iter().sum::<f32>() / all_avg_sims.len() as f32;
@@ -256,9 +289,31 @@ fn compare_quantized_vs_openvino(
     eprintln!("Average of minimum similarities per doc: {:.6}", overall_avg_min);
     eprintln!("Average of average similarities per doc: {:.6}", overall_avg);
 
+    // Similarity histogram
+    eprintln!("\n--- Similarity distribution ---");
+    let buckets = ["0.70-0.75", "0.75-0.80", "0.80-0.85", "0.85-0.90", "0.90-0.95", "0.95-1.00", "1.00+"];
+    for (i, label) in buckets.iter().enumerate() {
+        if sim_histogram[i] > 0 {
+            eprintln!("  {}: {} vectors", label, sim_histogram[i]);
+        }
+    }
+
+    // Outlier details
+    if outliers.is_empty() {
+        eprintln!("\nNo outliers below {:.2} threshold", outlier_threshold);
+    } else {
+        outliers.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap());
+        eprintln!("\n--- Worst {} outliers (sim < {:.2}) ---", outliers.len().min(30), outlier_threshold);
+        eprintln!("{:<8} {:<6} {:<20} {:<10} {:<10} {:<10} {:<6}",
+            "doc_id", "pos", "token", "sim", "norm_q", "norm_ov", "seqlen");
+        for o in outliers.iter().take(30) {
+            eprintln!("{:<8} {:<6} {:<20} {:<10.6} {:<10.4} {:<10.4} {:<6}",
+                o.0, o.2, o.1, o.3, o.4, o.5, o.6);
+        }
+    }
+
     if overall_min < 0.90 {
         eprintln!("\n⚠️  WARNING: Low minimum similarity (<0.90) detected");
-        eprintln!("    This suggests significant divergence between backends");
     } else if overall_min < 0.95 {
         eprintln!("\n✓ Acceptable similarity (>0.90) - some quantization differences expected");
     } else {
