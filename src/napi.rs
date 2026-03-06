@@ -377,14 +377,8 @@ impl Indexer {
             handle: Mutex::new(Some(handle)),
         }
     }
-    pub fn init_global(db_name: String, assets: String) -> &'static Self {
+    pub fn global(db_name: String, assets: String) -> &'static Self {
         INDEXER.get_or_init(|| Indexer::new(db_name, assets))
-    }
-
-    pub fn global() -> &'static Self {
-        INDEXER
-            .get()
-            .expect("Indexer not initialized. Call `Indexer::init_global()` first.")
     }
 
     pub fn add(
@@ -451,7 +445,7 @@ struct WarpInner {
 
 impl WarpInner {
     pub fn new(db_name: String, assets: String) -> Self {
-        let _indexer = Indexer::init_global(db_name.clone(), assets.clone());
+        let _indexer = Indexer::global(db_name.clone(), assets.clone());
         let db = crate::DB::new_reader(db_name.into()).ok();
         let cache = crate::EmbeddingsCache::new(16);
         let device = crate::make_device();
@@ -590,6 +584,7 @@ impl<'env> ScopedTask<'env> for ScoreTask {
 pub struct Warp {
     db_name: String,
     assets: String,
+    indexer: &'static Indexer,
 }
 
 #[napi]
@@ -603,10 +598,11 @@ impl Warp {
             assets,
             cwd.display()
         );
-        let _indexer = Indexer::init_global(db_name.clone(), assets.clone());
+        let indexer = Indexer::global(db_name.clone(), assets.clone());
         Self {
-            db_name: db_name,
-            assets: assets,
+            db_name,
+            assets,
+            indexer,
         }
     }
     #[napi]
@@ -653,32 +649,32 @@ impl Warp {
             None
         };
 
-        Indexer::global().add(uuid, date, metadata, body, lengths);
+        self.indexer.add(uuid, date, metadata, body, lengths);
     }
 
     #[napi]
     pub fn remove(&self, uuid: String) {
         let uuid = Uuid::parse_str(&uuid).unwrap();
-        Indexer::global().remove(uuid);
+        self.indexer.remove(uuid);
     }
 
     #[napi]
     pub fn index(&self) {
-        Indexer::global().index();
+        self.indexer.index();
     }
 
     #[napi]
     pub fn clear(&self) {
-        Indexer::global().clear();
+        self.indexer.clear();
     }
 
     #[napi]
     pub fn delete(&self, sql_filter: SqlStatement) {
-        Indexer::global().delete(sql_filter.into());
+        self.indexer.delete(sql_filter.into());
     }
 
     #[napi]
     pub fn shutdown(&self) {
-        Indexer::global().shutdown();
+        self.indexer.shutdown();
     }
 }
