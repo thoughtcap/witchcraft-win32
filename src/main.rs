@@ -1,5 +1,4 @@
 use anyhow::Result;
-use csv;
 use log::{debug, info};
 use log::{Level, LevelFilter, Metadata, Record};
 use serde::{Deserialize, Serialize};
@@ -106,12 +105,15 @@ pub fn bulk_search(
         let now = std::time::Instant::now();
         let fts_start = std::time::Instant::now();
         let fts_matches = if use_fulltext {
-            warp::fulltext_search(&db, &question, top_k, None)?
+            warp::fulltext_search(db, &question, top_k, None)?
         } else {
             vec![]
         };
         if use_fulltext {
-            debug!("fulltext search took {} ms.", fts_start.elapsed().as_millis());
+            debug!(
+                "fulltext search took {} ms.",
+                fts_start.elapsed().as_millis()
+            );
         }
 
         let sem_matches = if let Some(embedder) = embedder {
@@ -122,8 +124,11 @@ pub fn bulk_search(
             embedder_histogram.record(embedder_latency_ms);
 
             let match_start = std::time::Instant::now();
-            let matches = warp::match_centroids(&db, &qe, 0.0, top_k, None).unwrap();
-            debug!("match_centroids call took {} ms.", match_start.elapsed().as_millis());
+            let matches = warp::match_centroids(db, &qe, 0.0, top_k, None).unwrap();
+            debug!(
+                "match_centroids call took {} ms.",
+                match_start.elapsed().as_millis()
+            );
             matches
         } else {
             vec![]
@@ -138,15 +143,22 @@ pub fn bulk_search(
             sem_idxs
         };
         fused.truncate(top_k);
-        debug!("rank fusion took {} ms.", fusion_start.elapsed().as_millis());
+        debug!(
+            "rank fusion took {} ms.",
+            fusion_start.elapsed().as_millis()
+        );
 
         let metadata_start = std::time::Instant::now();
         let mut metadatas = vec![];
         for idx in fused {
-            let metadata = metadata_query.query_row((idx,), |row| Ok(row.get::<_, String>(0)?))?;
+            let metadata = metadata_query.query_row((idx,), |row| row.get::<_, String>(0))?;
             metadatas.push(metadata);
         }
-        debug!("fetching {} metadata took {} ms.", metadatas.len(), metadata_start.elapsed().as_millis());
+        debug!(
+            "fetching {} metadata took {} ms.",
+            metadatas.len(),
+            metadata_start.elapsed().as_millis()
+        );
         let total_ms = now.elapsed().as_millis();
         histogram.record(total_ms.try_into().unwrap());
         debug!("search took {} ms in total", now.elapsed().as_millis());
@@ -156,7 +168,7 @@ pub fn bulk_search(
             let data: CorpusMetaData = serde_json::from_str(metadata)?;
             write!(writer, "{},", data.key).unwrap();
         }
-        write!(writer, "\n").unwrap();
+        writeln!(writer).unwrap();
         writer.flush().unwrap();
     }
     if embedder.is_some() {
@@ -204,7 +216,7 @@ fn main() -> Result<()> {
         let q = &args[2..].join(" ");
         let use_fulltext = args[1] == "hybrid";
         let results =
-            warp::search(&db, &embedder, &mut cache, &q, 0.75, 10, use_fulltext, None).unwrap();
+            warp::search(&db, &embedder, &mut cache, q, 0.75, 10, use_fulltext, None).unwrap();
         for (score, _metadata, body, body_idx) in results {
             println!("{score}: {body} @ {body_idx}");
             println!("=============================================");
@@ -242,7 +254,7 @@ fn main() -> Result<()> {
         }
     } else if args.len() == 2 && &args[1] == "clear" {
         let mut db = DB::new(db_name).unwrap();
-        let _ = db.clear();
+        db.clear();
     } else {
         eprintln!("\n*** Usage: {} clear | readcsv <file> | embed | index | reindex | query <text> | hybrid <text> | querycsv <file> <results-file> ***\n", args[0]);
     };

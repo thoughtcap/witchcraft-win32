@@ -13,13 +13,13 @@ pub struct Embedder {
 }
 
 impl Embedder {
-    pub fn new(device: &Device, assets: &std::path::PathBuf) -> Result<Self> {
+    pub fn new(device: &Device, assets: &std::path::Path) -> Result<Self> {
         let (builder, tokenizer) = t5_encoder::T5ModelBuilder::load(assets)?;
-        let model = builder.build_encoder(&device, assets)?;
+        let model = builder.build_encoder(device, assets)?;
         Ok(Self { tokenizer, model })
     }
 
-    pub fn embed(self: &Self, text: &str) -> Result<(Tensor, Vec<(usize, usize)>)> {
+    pub fn embed(&self, text: &str) -> Result<(Tensor, Vec<(usize, usize)>)> {
         let now = std::time::Instant::now();
         let model = &self.model;
         let device = model.device();
@@ -37,7 +37,7 @@ impl Embedder {
         let mut start = 0;
         loop {
             let end = (start + max_len).min(n_tokens);
-            let input = Tensor::new(&ids[start..end], &device)?.unsqueeze(0)?;
+            let input = Tensor::new(&ids[start..end], device)?.unsqueeze(0)?;
             let chunk = model.forward(&input)?.squeeze(0)?.to_device(&Device::Cpu)?;
 
             let (m, _n) = chunk.dims2()?;

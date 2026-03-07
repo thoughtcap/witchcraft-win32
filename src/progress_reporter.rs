@@ -20,7 +20,7 @@ impl ProgressReporter {
             pb.set_style(
                 indicatif::ProgressStyle::default_bar()
                     .template("{msg} [{bar:40}] {pos}/{len}")
-                    .unwrap()
+                    .unwrap(),
             );
             pb.set_message(phase.to_string());
             Some(pb)

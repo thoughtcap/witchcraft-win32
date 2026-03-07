@@ -1,4 +1,4 @@
-const INV_SQRT2: f32 = 0.7071067811865475;
+const INV_SQRT2: f32 = 0.707_106_77;
 
 #[inline(always)]
 pub(crate) fn haar_forward_mirror_edge(x: &mut [f32]) {
@@ -7,9 +7,9 @@ pub(crate) fn haar_forward_mirror_edge(x: &mut [f32]) {
     let mut n = n0;
 
     while n > 1 {
-        let pairs = n / 2; // full (2i,2i+1) pairs
-        let odd = (n & 1) as usize; // 1 if odd, 0 if even
-        let n_coarse = pairs + odd; // ceil(n/2)
+        let pairs = n / 2;
+        let odd = n & 1;
+        let n_coarse = pairs + odd;
 
         // regular pairs
         for i in 0..pairs {
@@ -40,14 +40,14 @@ pub(crate) fn haar_inverse_mirror_edge(x: &mut [f32]) {
     let mut n = n0;
     levels.push(n);
     while n > 1 {
-        let odd = (n & 1) as usize;
+        let odd = n & 1;
         n = (n / 2) + odd; // ceil(n/2)
         levels.push(n);
     }
 
     for w in (1..levels.len()).rev() {
         let n_prev = levels[w - 1]; // size before this forward step
-        let odd = (n_prev & 1) as usize;
+        let odd = n_prev & 1;
         let pairs = n_prev / 2; // floor(n_prev/2)
         let n_coarse = pairs + odd; // ceil(n_prev/2)
 

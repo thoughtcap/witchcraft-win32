@@ -224,7 +224,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(results.len() >= 1, "should find flamingo fact after full index");
+        assert!(
+            results.len() >= 1,
+            "should find flamingo fact after full index"
+        );
 
         // Phase 2: Add a few new documents (small batch triggers incremental)
         let new_facts = [

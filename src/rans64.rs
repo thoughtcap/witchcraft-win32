@@ -44,7 +44,7 @@ impl RansEncSymbol {
         assert!(freq <= (1u32 << scale_bits) - cum_freq);
 
         let x_max = ((RANS64_L >> scale_bits) << 32) * (freq as u64);
-        let cmpl_freq = ((1u32 << scale_bits) - freq) as u32;
+        let cmpl_freq = (1u32 << scale_bits) - freq;
 
         if freq < 2 {
             // Same special-case logic as in ryg's rANS for freq=0/1.
@@ -67,7 +67,7 @@ impl RansEncSymbol {
             }
 
             // rcp_freq ≈ 2^(shift+63) / freq, in 64-bit fixed point.
-            let rcp_freq = (((1u128 << (shift + 63)) + (freq as u128) - 1) / (freq as u128)) as u64;
+            let rcp_freq = (1u128 << (shift + 63)).div_ceil(freq as u128) as u64;
             let rcp_shift = (shift - 1) as u16;
             let bias = cum_freq as u64;
 
@@ -119,7 +119,7 @@ impl RansEncoder {
             self.idx -= 4;
 
             let v = *x as u32;
-            self.buf[self.idx + 0] = (v >> 0) as u8;
+            self.buf[self.idx] = v as u8;
             self.buf[self.idx + 1] = (v >> 8) as u8;
             self.buf[self.idx + 2] = (v >> 16) as u8;
             self.buf[self.idx + 3] = (v >> 24) as u8;
@@ -289,7 +289,7 @@ impl RansDecoder {
                 return Err(RansDecodeError::Underflow);
             }
 
-            let b0 = self.buf[self.idx + 0] as u64;
+            let b0 = self.buf[self.idx] as u64;
             let b1 = self.buf[self.idx + 1] as u64;
             let b2 = self.buf[self.idx + 2] as u64;
             let b3 = self.buf[self.idx + 3] as u64;

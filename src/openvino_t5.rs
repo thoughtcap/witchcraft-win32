@@ -21,8 +21,7 @@ use tokenizers::Tokenizer;
 // Asset definitions
 embed_asset!(pub TOKENIZER, "tokenizer.json");
 
-pub struct T5ModelBuilder {
-}
+pub struct T5ModelBuilder {}
 
 impl T5ModelBuilder {
     /// Load the T5 model configuration and tokenizer from assets.
@@ -45,7 +44,10 @@ impl T5ModelBuilder {
                         unsafe {
                             std::env::set_var("PATH", new_path);
                         }
-                        log::info!("[INFO] Added assets directory to PATH for OpenVINO DLLs: {}", assets_str);
+                        log::info!(
+                            "[INFO] Added assets directory to PATH for OpenVINO DLLs: {}",
+                            assets_str
+                        );
                     }
                 }
             }
@@ -58,25 +60,30 @@ impl T5ModelBuilder {
         let tokenizer = Tokenizer::from_bytes(tok_bytes)
             .map_err(|e| anyhow!("failed to create tokenizer: {}", e))?;
 
-        Ok((Self { }, tokenizer))
+        Ok((Self {}, tokenizer))
     }
 
     /// Build the T5 encoder model using OpenVINO with INT4 quantization.
     pub fn build_encoder(&self, device: &Device, assets: &PathBuf) -> Result<T5EncoderModel> {
         // Initialize OpenVINO Core
-        let mut core = Core::new()
-            .map_err(|e| anyhow!("failed to create OpenVINO Core: {:?}", e))?;
+        let mut core =
+            Core::new().map_err(|e| anyhow!("failed to create OpenVINO Core: {:?}", e))?;
 
         // Load model files directly from assets directory
         log::info!("loading OpenVINO model...");
         let xml_path = assets.join("xtr-ov-int4.xml");
         let bin_path = assets.join("xtr-ov-int4.bin");
 
-        let model = core.read_model_from_file(
-            xml_path.to_str().ok_or_else(|| anyhow!("invalid XML path"))?,
-            bin_path.to_str().ok_or_else(|| anyhow!("invalid BIN path"))?,
-        )
-        .map_err(|e| anyhow!("failed to read OpenVINO model: {:?}", e))?;
+        let model = core
+            .read_model_from_file(
+                xml_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("invalid XML path"))?,
+                bin_path
+                    .to_str()
+                    .ok_or_else(|| anyhow!("invalid BIN path"))?,
+            )
+            .map_err(|e| anyhow!("failed to read OpenVINO model: {:?}", e))?;
 
         // Determine OpenVINO device
         // Default to CPU for INT4 models - GPU has NaN issues with real text inputs
@@ -90,8 +97,12 @@ impl T5ModelBuilder {
         if matches!(ov_device, DeviceType::GPU) {
             use openvino::RwPropertyKey;
             let precision = "f32".to_string();
-            core.set_property(&ov_device, &RwPropertyKey::HintInferencePrecision, &precision)
-                .map_err(|e| anyhow!("failed to set GPU precision hint: {:?}", e))?;
+            core.set_property(
+                &ov_device,
+                &RwPropertyKey::HintInferencePrecision,
+                &precision,
+            )
+            .map_err(|e| anyhow!("failed to set GPU precision hint: {:?}", e))?;
         }
 
         // Compile the model for the target device
@@ -118,7 +129,9 @@ impl T5ModelBuilder {
 /// a memory leak in its CPU plugin that occurs on every shape transition.
 fn bucket_size(n: usize) -> usize {
     let min = 64;
-    if n <= min { return min; }
+    if n <= min {
+        return min;
+    }
     n.next_power_of_two()
 }
 
@@ -167,12 +180,11 @@ impl T5EncoderModel {
         let ov_shape = Shape::new(&[batch_size as i64, padded_len as i64])
             .map_err(|e| anyhow!("failed to create OpenVINO shape: {:?}", e))?;
 
-        let mut ov_input = openvino::Tensor::new(
-            openvino::ElementType::I64,
-            &ov_shape
-        ).map_err(|e| anyhow!("failed to create OpenVINO input tensor: {:?}", e))?;
+        let mut ov_input = openvino::Tensor::new(openvino::ElementType::I64, &ov_shape)
+            .map_err(|e| anyhow!("failed to create OpenVINO input tensor: {:?}", e))?;
 
-        ov_input.get_data_mut::<i64>()
+        ov_input
+            .get_data_mut::<i64>()
             .map_err(|e| anyhow!("failed to get mutable data: {:?}", e))?
             .copy_from_slice(&padded);
 
@@ -190,7 +202,8 @@ impl T5EncoderModel {
             .get_output_tensor()
             .map_err(|e| anyhow!("failed to get output tensor: {:?}", e))?;
 
-        let output_shape = ov_output.get_shape()
+        let output_shape = ov_output
+            .get_shape()
             .map_err(|e| anyhow!("failed to get output shape: {:?}", e))?;
 
         let output_dims: Vec<usize> = output_shape
@@ -199,10 +212,12 @@ impl T5EncoderModel {
             .map(|&d| d as usize)
             .collect();
 
-        let embedding_dim = *output_dims.last()
+        let embedding_dim = *output_dims
+            .last()
             .ok_or_else(|| anyhow!("empty output dimensions"))?;
 
-        let output_data: Vec<f32> = ov_output.get_data::<f32>()
+        let output_data: Vec<f32> = ov_output
+            .get_data::<f32>()
             .map_err(|e| anyhow!("failed to get output data: {:?}", e))?
             .to_vec();
 
@@ -211,7 +226,8 @@ impl T5EncoderModel {
         std::mem::forget(ov_output);
 
         // Slice off padding: keep only the first seq_len token embeddings
-        let unpadded: Vec<f32> = output_data.chunks(padded_len * embedding_dim)
+        let unpadded: Vec<f32> = output_data
+            .chunks(padded_len * embedding_dim)
             .flat_map(|batch| batch[..seq_len * embedding_dim].iter().copied())
             .collect();
 
@@ -219,7 +235,8 @@ impl T5EncoderModel {
             unpadded,
             &[batch_size, seq_len, embedding_dim],
             &self.device,
-        ).map_err(|e| anyhow!("failed to create output Candle tensor: {}", e))?;
+        )
+        .map_err(|e| anyhow!("failed to create output Candle tensor: {}", e))?;
 
         Ok(output_tensor)
     }

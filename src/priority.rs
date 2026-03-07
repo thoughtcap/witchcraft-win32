@@ -6,7 +6,8 @@
 #[cfg(windows)]
 mod windows_impl {
     use windows::Win32::System::Threading::{
-        GetCurrentThread, GetThreadPriority, SetThreadPriority, THREAD_PRIORITY, THREAD_PRIORITY_IDLE,
+        GetCurrentThread, GetThreadPriority, SetThreadPriority, THREAD_PRIORITY,
+        THREAD_PRIORITY_IDLE,
     };
 
     pub struct PriorityManager {

@@ -70,7 +70,11 @@ impl PackedRight {
             let (n, d) = b.dims2()?;
             let data = b.flatten_all()?.to_vec1::<f32>()?;
             let packed = fbgemm_rs::PackedMatrix::from_transposed(d, n, &data);
-            return Ok(Self::Packed { inner: packed, n, device: Device::Cpu });
+            return Ok(Self::Packed {
+                inner: packed,
+                n,
+                device: Device::Cpu,
+            });
         }
         Ok(Self::Tensor(b.clone()))
     }

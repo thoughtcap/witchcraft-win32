@@ -65,11 +65,7 @@ impl CustomOp1 for QTiledOp {
         "qtiled-matmul"
     }
 
-    fn cpu_fwd(
-        &self,
-        storage: &CpuStorage,
-        layout: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, storage: &CpuStorage, layout: &Layout) -> Result<(CpuStorage, Shape)> {
         if !layout.is_contiguous() {
             candle_core::bail!("input tensor is not contiguous {layout:?}")
         }
@@ -164,14 +160,13 @@ fn fused_gated_gelu_inner<T: GgmlType>(
         for row_idx in 0..m {
             let lhs_row = &lhs_b[row_idx * k_in_blocks..(row_idx + 1) * k_in_blocks];
             for col_idx in tile_start..tile_end {
-                let gate_col =
-                    &rhs_gate[col_idx * k_in_blocks..(col_idx + 1) * k_in_blocks];
+                let gate_col = &rhs_gate[col_idx * k_in_blocks..(col_idx + 1) * k_in_blocks];
                 let up_col = &rhs_up[col_idx * k_in_blocks..(col_idx + 1) * k_in_blocks];
                 let gate = T::vec_dot(k, gate_col, lhs_row);
                 let up = T::vec_dot(k, up_col, lhs_row);
-                let gate = 0.5 * gate
-                    * (1.0
-                        + fast_tanh(0.7978845608_f32 * gate * (1.0 + 0.044715 * gate * gate)));
+                let gate = 0.5
+                    * gate
+                    * (1.0 + fast_tanh(0.7978845608_f32 * gate * (1.0 + 0.044715 * gate * gate)));
                 unsafe {
                     *dst.add(row_idx * n + col_idx) = gate * up;
                 }
@@ -187,11 +182,7 @@ impl CustomOp1 for QGatedMatMul {
         "qgated-matmul"
     }
 
-    fn cpu_fwd(
-        &self,
-        storage: &CpuStorage,
-        layout: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, storage: &CpuStorage, layout: &Layout) -> Result<(CpuStorage, Shape)> {
         if !layout.is_contiguous() {
             candle_core::bail!("input tensor is not contiguous {layout:?}")
         }
@@ -265,11 +256,7 @@ impl CustomOp1 for FbgemmOp {
         "fbgemm-matmul"
     }
 
-    fn cpu_fwd(
-        &self,
-        storage: &CpuStorage,
-        layout: &Layout,
-    ) -> Result<(CpuStorage, Shape)> {
+    fn cpu_fwd(&self, storage: &CpuStorage, layout: &Layout) -> Result<(CpuStorage, Shape)> {
         if !layout.is_contiguous() {
             candle_core::bail!("input tensor is not contiguous {layout:?}")
         }
@@ -282,9 +269,7 @@ impl CustomOp1 for FbgemmOp {
         let mut dst_shape = src_shape.dims().to_vec();
         let last_k = dst_shape.pop().unwrap();
         if last_k != k {
-            candle_core::bail!(
-                "input tensor {layout:?} incompatible with packed matrix ({k}x{n})"
-            )
+            candle_core::bail!("input tensor {layout:?} incompatible with packed matrix ({k}x{n})")
         }
         dst_shape.push(n);
         let dst_shape = Shape::from(dst_shape);
@@ -347,7 +332,9 @@ impl MatMul {
     pub fn from_tensor(t: Tensor) -> Self {
         #[cfg(feature = "fbgemm")]
         {
-            let (n, k) = t.dims2().expect("weight must be 2D for MatMul::from_tensor");
+            let (n, k) = t
+                .dims2()
+                .expect("weight must be 2D for MatMul::from_tensor");
             let data = t
                 .flatten_all()
                 .and_then(|t| t.to_vec1::<f32>())

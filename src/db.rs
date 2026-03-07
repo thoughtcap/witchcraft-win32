@@ -1,7 +1,7 @@
 use super::types::SqlStatementInternal;
 use iso8601_timestamp::Timestamp;
 use log::{error, warn};
-use rusqlite::{Connection, OpenFlags, Result as SQLResult, Statement, params_from_iter};
+use rusqlite::{params_from_iter, Connection, OpenFlags, Result as SQLResult, Statement};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -25,7 +25,7 @@ impl DB {
         let connection =
             Connection::open_with_flags(db_fn.clone(), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         Ok(Self {
-            db_fn: db_fn,
+            db_fn,
             connection: Some(connection),
             remove_on_shutdown: false,
         })
@@ -70,8 +70,8 @@ impl DB {
             let _ = std::fs::remove_file(db_fn.with_extension("wal"));
             let _ = std::fs::remove_file(db_fn.with_extension("shm"));
             first_creation = true;
-            let connection = Connection::open(&db_fn)?;
-            connection
+
+            Connection::open(&db_fn)?
         };
 
         if first_creation {
@@ -81,7 +81,7 @@ impl DB {
         }
 
         // Enable WAL mode for better concurrency and performance
-        connection.pragma_update(None, "journal_mode", &"WAL")?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
 
         let query = format!(
@@ -140,10 +140,11 @@ impl DB {
             center BLOB NOT NULL, indices BLOB NOT NULL, residuals BLOB NOT NULL)";
         connection.execute(query, ())?;
 
-        let query = "CREATE TABLE IF NOT EXISTS indexed_chunk(chunkid INTEGER PRIMARY KEY NOT NULL)";
+        let query =
+            "CREATE TABLE IF NOT EXISTS indexed_chunk(chunkid INTEGER PRIMARY KEY NOT NULL)";
         connection.execute(query, ())?;
         Ok(Self {
-            db_fn: db_fn,
+            db_fn,
             connection: Some(connection),
             remove_on_shutdown: false,
         })
@@ -192,8 +193,7 @@ impl DB {
             // self-contained on exit (no stale -wal / -shm files left behind).
             let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
             match connection.close() {
-                Ok(_) => {
-                },
+                Ok(_) => {}
                 Err((conn, e)) => {
                     error!("failed to close db connection: {e}");
                     drop(conn);
@@ -208,7 +208,10 @@ impl DB {
                     self.remove_on_shutdown = false;
                 }
                 Err(v) => {
-                    warn!("unable to remove database file {}: {v}", self.db_fn.display());
+                    warn!(
+                        "unable to remove database file {}: {v}",
+                        self.db_fn.display()
+                    );
                 }
             };
 
@@ -221,10 +224,10 @@ impl DB {
     /// Checkpoint and truncate the WAL into the main database file.
     /// Safe to call at any point when no statements are active on this connection.
     pub fn checkpoint(&self) {
-        if let Some(connection) = self.connection.as_ref() {
-            if let Err(e) = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
-                warn!("wal_checkpoint failed: {e}");
-            }
+        if let Some(connection) = self.connection.as_ref()
+            && let Err(e) = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+        {
+            warn!("wal_checkpoint failed: {e}");
         }
     }
 
@@ -232,18 +235,18 @@ impl DB {
         std::fs::metadata(&self.db_fn).map(|meta| meta.len())
     }
 
-    pub fn execute(self: &Self, sql: &str) -> SQLResult<()> {
+    pub fn execute(&self, sql: &str) -> SQLResult<()> {
         match self.conn().execute(sql, ()) {
             Ok(_v) => Ok(()),
             Err(v) => {
                 error!("failed to execute SQL {v}");
-                Err(v.into())
+                Err(v)
             }
         }
     }
 
-    pub fn query(self: &Self, sql: &str) -> SQLResult<Statement<'_>> {
-        self.conn().prepare(&sql)
+    pub fn query(&self, sql: &str) -> SQLResult<Statement<'_>> {
+        self.conn().prepare(sql)
     }
 
     pub fn begin_transaction(&self) -> SQLResult<()> {
@@ -262,7 +265,7 @@ impl DB {
     }
 
     pub fn add_doc(
-        self: &mut Self,
+        &mut self,
         uuid: &Uuid,
         date: Option<Timestamp>,
         metadata: &str,
@@ -286,7 +289,7 @@ impl DB {
             .join(",");
 
         let mut hasher = Sha256::new();
-        hasher.update(&body);
+        hasher.update(body);
         hasher.update(&lens);
         let hash = format!("{:x}", hasher.finalize());
         let hash = &hash[..HASH_CHARS];
@@ -310,14 +313,14 @@ impl DB {
         Ok(())
     }
 
-    pub fn remove_doc(self: &mut Self, uuid: &Uuid) -> SQLResult<()> {
+    pub fn remove_doc(&mut self, uuid: &Uuid) -> SQLResult<()> {
         self.conn()
             .execute("DELETE FROM document WHERE uuid = ?1", (uuid.to_string(),))?;
         Ok(())
     }
 
     pub fn add_chunk(
-        self: &Self,
+        &self,
         hash: &str,
         model: &str,
         embeddings: &Vec<u8>,
@@ -331,7 +334,7 @@ impl DB {
     }
 
     pub fn add_bucket(
-        self: &Self,
+        &self,
         id: u32,
         center: &Vec<u8>,
         indices: &Vec<u8>,
@@ -344,14 +347,13 @@ impl DB {
         Ok(())
     }
 
-    pub fn add_indexed_chunk(self: &Self, chunkid: u32) -> SQLResult<()> {
+    pub fn add_indexed_chunk(&self, chunkid: u32) -> SQLResult<()> {
         self.conn().execute(
             "INSERT OR REPLACE INTO indexed_chunk VALUES(?1)",
             (chunkid,),
         )?;
         Ok(())
     }
-
 }
 
 impl Drop for DB {
@@ -359,7 +361,7 @@ impl Drop for DB {
         if let Some(connection) = self.connection.take() {
             let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
             match connection.close() {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err((conn, e)) => {
                     error!("failed to close db connection in Drop: {e}");
                     drop(conn);

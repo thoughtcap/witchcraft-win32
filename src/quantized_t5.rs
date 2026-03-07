@@ -15,19 +15,19 @@
 //! - 🤗 [Model Card](https://huggingface.co/t5-base)
 //! - 🤗 Original model from [T5](https://github.com/huggingface/transformers/blob/main/src/transformers/models/t5/modeling_t5.py)
 
+#[cfg(feature = "hybrid-dequant")]
+use crate::fused_matmul::MatMul as QMatMul;
+#[cfg(not(feature = "hybrid-dequant"))]
+use candle_core::quantized::QMatMul;
 use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_nn::Activation;
 use candle_transformers::models::t5::{
     deserialize_feed_forward_proj_activation, ActivationWithOptionalGating,
 };
-#[cfg(not(feature = "hybrid-dequant"))]
-use candle_core::quantized::QMatMul;
-#[cfg(feature = "hybrid-dequant")]
-use crate::fused_matmul::MatMul as QMatMul;
 use candle_transformers::quantized_nn::Embedding;
 use candle_transformers::quantized_var_builder::VarBuilder;
 use serde::Deserialize;
-use std::io::{Error, ErrorKind};
+use std::io::Error;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
@@ -312,9 +312,18 @@ impl T5Attention {
         let inner_dim = cfg.num_heads * cfg.d_kv;
         #[cfg(feature = "hybrid-dequant")]
         let (qkv, o) = {
-            let q_w = vb.pp("q").get((inner_dim, cfg.d_model), "weight")?.dequantize(vb.device())?;
-            let k_w = vb.pp("k").get((inner_dim, cfg.d_model), "weight")?.dequantize(vb.device())?;
-            let v_w = vb.pp("v").get((inner_dim, cfg.d_model), "weight")?.dequantize(vb.device())?;
+            let q_w = vb
+                .pp("q")
+                .get((inner_dim, cfg.d_model), "weight")?
+                .dequantize(vb.device())?;
+            let k_w = vb
+                .pp("k")
+                .get((inner_dim, cfg.d_model), "weight")?
+                .dequantize(vb.device())?;
+            let v_w = vb
+                .pp("v")
+                .get((inner_dim, cfg.d_model), "weight")?
+                .dequantize(vb.device())?;
             let qkv = QMatMul::from_tensor(Tensor::cat(&[&q_w, &k_w, &v_w], 0)?);
             let o = new_qmm_dequant(inner_dim, cfg.d_model, vb.pp("o"))?;
             (qkv, o)
@@ -696,30 +705,20 @@ pub struct T5ModelBuilder {
 }
 
 impl T5ModelBuilder {
-    pub fn load(assets: &std::path::PathBuf) -> candle_core::Result<(Self, Tokenizer)> {
+    pub fn load(assets: &std::path::Path) -> candle_core::Result<(Self, Tokenizer)> {
         // CONFIG: bytes -> JSON
-        let cfg_bytes = CONFIG.bytes(assets).map_err(|_| {
-            Error::new(
-                ErrorKind::Other,
-                "failed to get decompressed bytes for CONFIG",
-            )
-        })?;
-        let config: Config = serde_json::from_slice(cfg_bytes).map_err(|e| {
-            Error::new(
-                ErrorKind::Other,
-                format!("failed to parse CONFIG as JSON: {e}"),
-            )
-        })?;
+        let cfg_bytes = CONFIG
+            .bytes(assets)
+            .map_err(|_| Error::other("failed to get decompressed bytes for CONFIG"))?;
+        let config: Config = serde_json::from_slice(cfg_bytes)
+            .map_err(|e| Error::other(format!("failed to parse CONFIG as JSON: {e}")))?;
 
         // TOKENIZER: bytes -> Tokenizer
-        let tok_bytes = TOKENIZER.bytes(assets).map_err(|_| {
-            Error::new(
-                ErrorKind::Other,
-                "failed to get decompressed bytes for TOKENIZER",
-            )
-        })?;
+        let tok_bytes = TOKENIZER
+            .bytes(assets)
+            .map_err(|_| Error::other("failed to get decompressed bytes for TOKENIZER"))?;
         let tokenizer = Tokenizer::from_bytes(tok_bytes)
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to parse TOKENIZER: {e}")))?;
+            .map_err(|e| Error::other(format!("failed to parse TOKENIZER: {e}")))?;
 
         Ok((Self { config }, tokenizer))
     }
@@ -727,18 +726,16 @@ impl T5ModelBuilder {
     pub fn build_encoder(
         &self,
         device: &Device,
-        assets: &std::path::PathBuf,
+        assets: &std::path::Path,
     ) -> candle_core::Result<T5EncoderModel> {
         // MODEL: mmap GGUF file directly
         let model_path = assets.join("xtr.gguf");
 
-        let vb = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(
-            &model_path,
-            device,
-        )?;
+        let vb =
+            candle_transformers::quantized_var_builder::VarBuilder::from_gguf(&model_path, device)?;
 
         let enc = T5EncoderModel::load(vb, &self.config)
-            .map_err(|e| Error::new(ErrorKind::Other, format!("failed to load T5 encoder: {e}")))?;
+            .map_err(|e| Error::other(format!("failed to load T5 encoder: {e}")))?;
 
         Ok(enc)
     }

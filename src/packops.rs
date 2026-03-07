@@ -18,8 +18,8 @@ pub fn make_q4_dequant_table() -> Result<[f32; 16]> {
 
     // Extract into a fixed array
     let mut table = [0f32; 16];
-    for i in 0..16 {
-        table[i] = x.get(i)?.to_scalar::<f32>()?;
+    for (i, slot) in table.iter_mut().enumerate() {
+        *slot = x.get(i)?.to_scalar::<f32>()?;
     }
 
     Ok(table)
@@ -30,7 +30,6 @@ pub fn make_q4_dequant_table() -> Result<[f32; 16]> {
 ///
 /// Takes symbols as a slice of (symbol, count) pairs and returns
 /// a Vec of (symbol, scaled_count) pairs.
-
 pub fn scale_histogram(symbols: &[(u16, u32)], log2_scale: u32) -> Vec<(u16, u16)> {
     assert!(!symbols.is_empty(), "Histogram must not be empty");
     assert!(log2_scale <= 16, "log2_scale must be <= 16");
@@ -148,7 +147,7 @@ impl TensorPackOps for Tensor {
         let inv_scale_param = 1.0 / 4.0;
         let companding_param = 255.0;
         let inv_companding_param = 1.0 / companding_param;
-        let ones = Tensor::ones_like(&self)?;
+        let ones = Tensor::ones_like(self)?;
         let abs = self.abs()?;
         let sign = self.sign()?;
         let scaled =
@@ -285,8 +284,8 @@ impl TensorPackOps for Tensor {
             for &(q, freq) in &hist {
                 let freq_u32 = freq as u32;
                 q2sym[q as usize] = Some(rans64::RansEncSymbol::new(cum, freq_u32, RANS_BITS));
-                bytes.extend_from_slice(&(q as u16).to_ne_bytes());
-                bytes.extend_from_slice(&(freq as u16).to_ne_bytes());
+                bytes.extend_from_slice(&q.to_ne_bytes());
+                bytes.extend_from_slice(&freq.to_ne_bytes());
                 cum += freq_u32;
             }
 
@@ -419,7 +418,13 @@ impl TensorPackOps for Tensor {
 
             bytes = tail;
         }
-        anyhow::ensure!(bytes.len() == 0, "leftover {} bytes after decoding {} rows x {} cols", bytes.len(), rows, cols);
+        anyhow::ensure!(
+            bytes.is_empty(),
+            "leftover {} bytes after decoding {} rows x {} cols",
+            bytes.len(),
+            rows,
+            cols
+        );
 
         // L2 normalize all rows
         for r in 0..rows {
@@ -482,7 +487,7 @@ impl TensorPackOps for Tensor {
             f32s.push(f32::from_ne_bytes(arr));
         }
 
-        Ok(Tensor::from_vec(f32s, &[rows, cols], &device)?)
+        Ok(Tensor::from_vec(f32s, &[rows, cols], device)?)
     }
 
     fn from_companded_q4_bytes(
@@ -533,7 +538,6 @@ impl TensorPackOps for Tensor {
         Ok(Tensor::from_vec(out, &[rows, cols], device)?)
     }
     */
-
 }
 
 /*

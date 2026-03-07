@@ -8,13 +8,13 @@ use napi_derive::napi;
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-    sync::{Arc, Mutex, OnceLock, mpsc},
+    sync::{mpsc, Arc, Mutex, OnceLock},
     thread::{self, JoinHandle},
 };
 
 use uuid::Uuid;
 
-use log::{LevelFilter, Log, Metadata, Record, info, warn};
+use log::{info, warn, LevelFilter, Log, Metadata, Record};
 use napi::bindgen_prelude::*; // Env, Function, Result, etc.
 use napi::threadsafe_function::ThreadsafeCallContext;
 use once_cell::sync::OnceCell;
@@ -324,13 +324,13 @@ impl Indexer {
                                 match &embedder {
                                     Some(embedder) => {
                                         let now = std::time::Instant::now();
-                                        let got = match crate::embed_chunks(&db, &embedder, Some(10))
-                                        {
-                                            Ok(got) => got,
-                                            Err(_v) => {
-                                                break;
-                                            }
-                                        };
+                                        let got =
+                                            match crate::embed_chunks(&db, &embedder, Some(10)) {
+                                                Ok(got) => got,
+                                                Err(_v) => {
+                                                    break;
+                                                }
+                                            };
                                         let dt = now.elapsed().as_secs_f64();
                                         stats("embed-docs-per-second", ((got as f64) / dt).round());
 

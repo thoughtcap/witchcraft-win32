@@ -1,10 +1,7 @@
 //! assets.rs — Simple asset file loader with lazy caching.
 
 use once_cell::sync::OnceCell;
-use std::{
-    fs,
-    path::PathBuf,
-};
+use std::{fs, path::Path};
 
 /// An asset file that is loaded at most once and cached for the program's lifetime.
 pub struct Asset {
@@ -21,15 +18,14 @@ impl Asset {
     }
 
     /// Return the file bytes; loads and caches on first call.
-    pub fn bytes(&'static self, assets: &PathBuf) -> Result<&'static [u8], ()> {
+    #[allow(clippy::result_unit_err)]
+    pub fn bytes(&'static self, assets: &Path) -> Result<&'static [u8], ()> {
         self.cached
-            .get_or_init(|| {
-                match fs::read(assets.join(self.path)) {
-                    Ok(bytes) => Ok(bytes),
-                    Err(e) => {
-                        log::warn!("failed to read warp asset {}: {}", self.path, e);
-                        Err(())
-                    }
+            .get_or_init(|| match fs::read(assets.join(self.path)) {
+                Ok(bytes) => Ok(bytes),
+                Err(e) => {
+                    log::warn!("failed to read warp asset {}: {}", self.path, e);
+                    Err(())
                 }
             })
             .as_deref()
