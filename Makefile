@@ -7,10 +7,10 @@ env/bin/transformers: env/pyvenv.cfg
 assets:
 	mkdir -p assets
 
-assets/config.json assets/tokenizer.json xtr.safetensors: assets env/bin/transformers
+assets/config.json assets/tokenizer.json xtr.safetensors: env/bin/transformers | assets
 	(source env/*/activate; python downloadweights.py)
 
-assets/xtr.gguf:  assets xtr.safetensors
+assets/xtr.gguf: xtr.safetensors | assets
 	cargo run -p quantize-tool xtr.safetensors assets/xtr.gguf
 
 assets/xtr-ov-int4.bin assets/xtr-ov-int4.xml:
@@ -35,7 +35,7 @@ win: download
 	RUSTFLAGS='-C target-feature=+avx2' cargo xwin build --release --target x86_64-pc-windows-msvc --features t5-quantized,napi
 
 macintel: download
-	RUSTFLAGS='-C target-cpu=haswell' cargo build --release --target x86_64-apple-darwin --features t5-quantized,accelerate,hybrid-dequant,progress
+	RUSTFLAGS='-C target-cpu=haswell' cargo build --release --target x86_64-apple-darwin --features t5-quantized,fbgemm,hybrid-dequant,progress
 
 macintelasan: download
 	rustup override set nightly

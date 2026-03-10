@@ -5,24 +5,20 @@ semantic search engine ( https://github.com/jlscheerer/xtr-warp ).
 
 To run, you will need the XTR weights released by Google Deepmind, and
 this repo contains python scripts for downloading them from Huggingface
-and exporting to a single safetensors file:
+and quantizing to GGUF format:
 
-* requirements.txt is for use with pip, to set up an env with
+* requirements.txt is for use with uv, to set up an env with
   the required python packages for the download scripts, as in:
 
 ```
-python3 -m venv env
+uv venv env
 source env/bin/activate
-pip -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 * downloadweights.py downloads the XTR weights, adds the extra
-  XTRLinear layer, and exports into xtr.safetensors. It also compressed
-  the weights with zstd, unfortunately takes some time, but you only have
-  to do it once.
-
-(If you encounter TLS cerficiate errors running these scripts locally there is a
-problem with your ZScaler cert setup.)
+  XTRLinear layer, and exports into xtr.safetensors. It then quantizes
+  to GGUF for use by the quantized T5 backend.
 
 ## Cheat: Do everything with make: ##
 ```
@@ -42,7 +38,7 @@ run:
 For your convenience, nfcorpus.tsv is included, so you can just do this:
 
 ```
-export RUN="cargo run --release --features metal,accelerate --bin warp-cli"
+export RUN="cargo run --release --features t5-quantized,metal,accelerate --bin warp-cli"
 $ $RUN readcsv datasets/nfcorpus.tsv
 ```
 
@@ -53,26 +49,14 @@ $ $RUN embed
 ```
 
 This will look for documents that lack embeddings, and create and insert them.
-The embeddings are stored in float-32 precision, so this will inflate the database
-quite a bit. Technically we could drop the embeddings once they had been indexed,
-but right now we prefer to keep them around to not have to recompute them, at
-the expense of bloating up the database.
+The embeddings are compressed with Haar wavelet transforms and rANS entropy
+coding before storage.
 
 Next we create the index over the embeddings, with:
 
 ```
 $ $RUN index
 ```
-
-Which will scan the documents folder and create embedddings for everything. On
-macOS, you can make it run faster with:
-
-```
-$ $RUN --features accelerate index
-```
-
-This will use hardware acceleration for the embeddings as well as for other
-matrix ops.
 
 All state gets persisted in mydb.sqlite, and you can abort the indexer and
 it will pick up where it left off. To start over, you can just delete
@@ -91,12 +75,31 @@ And hopefully get a bunch of relevant answers. You can also try other
 variations of this, instead of "query" you can use:
 
 * **fulltext** to use traditional fulltext search
-* **hybrid** to combine fulltext and sematic using reciprocal rank fusion.
+* **hybrid** to combine fulltext and semantic using reciprocal rank fusion.
 
 There are also versions of these commands to run over tab-separate CSV files,
 useful for benchmarking. Please refer to the source code, or see the
 nfcorpus-score.sh and scifact-score.sh scripts for examples of doing this
 with datasets from BEIR.
+
+## Feature flags ##
+
+Exactly one T5 backend must be enabled:
+- `t5-quantized` -- GGUF quantized weights via candle (default)
+- `t5-openvino` -- OpenVINO inference backend
+
+Other flags:
+- `metal` -- macOS GPU acceleration (Apple Silicon only)
+- `accelerate` -- macOS BLAS via Accelerate framework
+- `fbgemm` -- fbgemm-rs packed GEMM (bf16 weights, faster on x86)
+- `hybrid-dequant` -- F32 attention + Q4K FFN with fused gated-gelu (x86, requires `fbgemm`)
+- `napi` -- Node.js native module via napi-rs
+- `embed-assets` -- bake weights into binary
+- `progress` -- progress bars for CLI
+
+Platform-specific recommended features:
+- **Apple Silicon**: `t5-quantized,metal,accelerate`
+- **Intel Mac (x86_64)**: `t5-quantized,accelerate,hybrid-dequant,fbgemm`
 
 ## Using as Node module ##
 
@@ -107,31 +110,14 @@ make buildemb
 ```
 
 Builds target/release/warp.node with all the weights embedded into the binary,
-not not have to deal with loading any files in production.  For day-to-day
+to not have to deal with loading any files in production. For day-to-day
 development, you may prefer to instead use:
-
 
 ```
 make build
 ```
 
-Which loads the compressed weights from the "assets" dir, and deal with
-symlinking "assets" into your Dash build tree by hand, as unfortunately Rust is
-quite slow at embedding the binaries, and does it from scratch every time you
-build.
-
-I've also played with adding a simple Node MCP server, you can test it with:
-
-```
-pip install cmcp
-make mcp
-```
-
-cmcp is a command line MCP client available in pip, and ts/index.ts provides
-a simple MPC server in typescript. Not sure yet what if anything we could use
-it for, we would have to tunnel the traffic back from the cloud the the MCP
-server running locally, but then our Assistent would be able to search your
-local files.
+Which loads the compressed weights from the "assets" dir.
 
 ## Windows build ##
 
