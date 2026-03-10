@@ -32,7 +32,7 @@ winmodule:
 	ln -vf target/x86_64-pc-windows-msvc/release/warp.dll target/release/warp-windows.node
 
 win: download
-	RUSTFLAGS='-C target-feature=+avx2' cargo xwin build --release --target x86_64-pc-windows-msvc --features t5-quantized,napi
+	RUSTFLAGS='-C target-feature=+avx2' cargo xwin build --release --target x86_64-pc-windows-msvc --features t5-openvino,fbgemm,napi
 
 macintel: download
 	RUSTFLAGS='-C target-cpu=haswell' cargo build --release --target x86_64-apple-darwin --features t5-quantized,fbgemm,hybrid-dequant,progress

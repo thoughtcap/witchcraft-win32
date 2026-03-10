@@ -15,7 +15,7 @@ use anyhow::{anyhow, Result};
 use candle_core::{Device, Tensor};
 use openvino::{CompiledModel, Core, DeviceType, InferRequest, Shape};
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::Path;
 use tokenizers::Tokenizer;
 
 // Asset definitions
@@ -28,7 +28,7 @@ impl T5ModelBuilder {
     ///
     /// This method loads the config.json and tokenizer.json files,
     /// which are shared across all T5 backend implementations.
-    pub fn load(assets: &PathBuf) -> Result<(Self, Tokenizer)> {
+    pub fn load(assets: &Path) -> Result<(Self, Tokenizer)> {
         // On Windows, add assets directory to PATH early if it contains OpenVINO DLLs
         // This must happen before any OpenVINO code loads
         #[cfg(all(target_os = "windows", feature = "t5-openvino"))]
@@ -36,7 +36,7 @@ impl T5ModelBuilder {
             let dll_file = assets.join("openvino_c.dll");
             if dll_file.exists() {
                 // Get absolute path
-                let abs_assets = assets.canonicalize().unwrap_or_else(|_| assets.clone());
+                let abs_assets = assets.canonicalize().unwrap_or_else(|_| assets.to_path_buf());
                 if let Some(assets_str) = abs_assets.to_str() {
                     // Add to PATH environment variable at the front
                     if let Ok(current_path) = std::env::var("PATH") {
@@ -64,7 +64,7 @@ impl T5ModelBuilder {
     }
 
     /// Build the T5 encoder model using OpenVINO with INT4 quantization.
-    pub fn build_encoder(&self, device: &Device, assets: &PathBuf) -> Result<T5EncoderModel> {
+    pub fn build_encoder(&self, device: &Device, assets: &Path) -> Result<T5EncoderModel> {
         // Initialize OpenVINO Core
         let mut core =
             Core::new().map_err(|e| anyhow!("failed to create OpenVINO Core: {:?}", e))?;
