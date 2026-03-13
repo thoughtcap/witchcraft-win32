@@ -31,6 +31,10 @@ use std::io::Error;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
+use crate::embed_asset;
+embed_asset!(pub CONFIG,    "config.json");
+embed_asset!(pub TOKENIZER, "tokenizer.json");
+
 #[cfg(not(feature = "hybrid-dequant"))]
 fn new_qmm(in_d: usize, out_d: usize, vb: VarBuilder) -> Result<QMatMul> {
     let device = vb.device();
@@ -696,11 +700,6 @@ impl T5EncoderModel {
         &self.device
     }
 }
-
-use crate::embed_asset;
-
-embed_asset!(pub CONFIG,    "config.json");
-embed_asset!(pub TOKENIZER, "tokenizer.json");
 
 pub struct T5ModelBuilder {
     config: Config,

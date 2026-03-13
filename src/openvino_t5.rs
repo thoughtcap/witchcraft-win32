@@ -10,7 +10,6 @@
 //! - Cross-platform support (Windows, macOS)
 //! - Compatible with existing embedder interface
 
-use crate::embed_asset;
 use anyhow::{anyhow, Result};
 use candle_core::{Device, Tensor};
 use openvino::{CompiledModel, Core, DeviceType, InferRequest, Shape};
@@ -18,7 +17,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use tokenizers::Tokenizer;
 
-// Asset definitions
+use crate::embed_asset;
 embed_asset!(pub TOKENIZER, "tokenizer.json");
 
 pub struct T5ModelBuilder {}
