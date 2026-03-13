@@ -187,11 +187,20 @@ impl DB {
         Ok(())
     }
 
+    /// Internal helper to checkpoint and truncate the WAL.
+    fn checkpoint_internal(connection: &rusqlite::Connection, log_errors: bool) {
+        if let Err(e) = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
+            if log_errors {
+                warn!("wal_checkpoint failed: {e}");
+            }
+        }
+    }
+
     pub fn shutdown(&mut self) {
         if let Some(connection) = self.connection.take() {
             // Checkpoint and truncate the WAL file so the main .sqlite file is
             // self-contained on exit (no stale -wal / -shm files left behind).
-            let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+            Self::checkpoint_internal(&connection, false);
             match connection.close() {
                 Ok(_) => {}
                 Err((conn, e)) => {
@@ -224,10 +233,8 @@ impl DB {
     /// Checkpoint and truncate the WAL into the main database file.
     /// Safe to call at any point when no statements are active on this connection.
     pub fn checkpoint(&self) {
-        if let Some(connection) = self.connection.as_ref()
-            && let Err(e) = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
-        {
-            warn!("wal_checkpoint failed: {e}");
+        if let Some(connection) = self.connection.as_ref() {
+            Self::checkpoint_internal(connection, true);
         }
     }
 
@@ -359,7 +366,7 @@ impl DB {
 impl Drop for DB {
     fn drop(&mut self) {
         if let Some(connection) = self.connection.take() {
-            let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+            Self::checkpoint_internal(&connection, false);
             match connection.close() {
                 Ok(_) => {}
                 Err((conn, e)) => {
