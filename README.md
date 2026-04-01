@@ -22,32 +22,23 @@ uv pip install -r requirements.txt
 
 ## Cheat: Do everything with make: ##
 ```
-make build
+make warp-cli
 ```
 
-Should also get you going.
+Should also get you going and end up with a symlink to the warp-cli
+executable in the top-level checkout directory.
 
 ## Creating an index: ##
 
 For testing, I have used the BEIR download script from XTR-Warp to download
-nfcorpus, a dataset of ~3600 medical abstracts, and used the createdocs.py
-script to dump them as individual files in the "documents" folder, which
-you have to create yourself. Once that is present and populated, you can
-run:
-
-For your convenience, nfcorpus.tsv is included, so you can just do this:
-
+nfcorpus.  For your convenience, nfcorpus.tsv is included here, so you can run:
 ```
-export RUN="cargo run --release --features t5-quantized,metal,accelerate --bin warp-cli"
-$ $RUN readcsv datasets/nfcorpus.tsv
+$ ./warp-cli readcsv datasets/nfcorpus.tsv
 ```
-
 With all the documents in place, we can now create embeddings for them, with:
-
 ```
-$ $RUN embed
+$ ./warp-cli embed
 ```
-
 This will look for documents that lack embeddings, and create and insert them.
 The embeddings are compressed with Haar wavelet transforms and rANS entropy
 coding before storage.
@@ -55,7 +46,7 @@ coding before storage.
 Next we create the index over the embeddings, with:
 
 ```
-$ $RUN index
+$ ./warp-cli index
 ```
 
 All state gets persisted in mydb.sqlite, and you can abort the indexer and
@@ -68,14 +59,13 @@ everything, it is not involved in the actual index search.
 When you have the index, you can query it with:
 
 ```
-$ $RUN query "does milk intake cause acne in teenagers?"
+$ ./warp-cli query "does milk intake cause acne in teenagers?"
 ```
 
 And hopefully get a bunch of relevant answers. You can also try other
-variations of this, instead of "query" you can use:
-
-* **fulltext** to use traditional fulltext search
-* **hybrid** to combine fulltext and semantic using reciprocal rank fusion.
+variations of this, instead of "query" you can also use "hybrid", which
+combines semantic search with the BM25 search functionality that comes
+standard with sqlite.
 
 There are also versions of these commands to run over tab-separate CSV files,
 useful for benchmarking. Please refer to the source code, or see the
@@ -84,7 +74,7 @@ with datasets from BEIR.
 
 ## Feature flags ##
 
-Exactly one T5 backend must be enabled:
+When building, exactly one T5 backend must be enabled:
 - `t5-quantized` -- GGUF quantized weights via candle (default)
 - `t5-openvino` -- OpenVINO inference backend
 
@@ -104,20 +94,12 @@ Platform-specific recommended features:
 ## Using as Node module ##
 
 We include a Makefile for building with Napi-rs and copying things around.
-
 ```
-make buildemb
-```
-
-Builds target/release/warp.node with all the weights embedded into the binary,
-to not have to deal with loading any files in production. For day-to-day
-development, you may prefer to instead use:
-
-```
-make build
+make module
 ```
 
-Which loads the compressed weights from the "assets" dir.
+Builds target/release/warp.node. Which loads the compressed weights from the
+"assets" dir.
 
 ## Windows build ##
 
