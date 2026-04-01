@@ -58,6 +58,7 @@ struct Colors {
     reset: &'static str,
     cyan: &'static str,
     green: &'static str,
+    bright_green: &'static str,
     yellow: &'static str,
     magenta: &'static str,
 }
@@ -71,6 +72,7 @@ fn colors() -> Colors {
             reset: "\x1b[0m",
             cyan: "\x1b[36m",
             green: "\x1b[32m",
+            bright_green: "\x1b[38;2;0;255;0m",
             yellow: "\x1b[33m",
             magenta: "\x1b[35m",
         }
@@ -81,6 +83,7 @@ fn colors() -> Colors {
             reset: "",
             cyan: "",
             green: "",
+            bright_green: "",
             yellow: "",
             magenta: "",
         }
@@ -104,6 +107,7 @@ fn search(db_name: &PathBuf, assets: &PathBuf, q: &str, session: Option<&str>) -
         logic: None,
         statements: None,
     });
+    let now = std::time::Instant::now();
     let results = warp::search(
         &db,
         &embedder,
@@ -114,11 +118,14 @@ fn search(db_name: &PathBuf, assets: &PathBuf, q: &str, session: Option<&str>) -
         true,
         sql_filter.as_ref(),
     )?;
+    let search_ms = now.elapsed().as_millis();
 
     // Render output to a buffer, then page if needed
     let (_, cols) = terminal_size();
     let separator: String = "─".repeat(cols);
     let mut buf = Vec::new();
+    writeln!(buf, "\n{}{}[[ {q} ]]{}", c.bold, c.bright_green, c.reset)?;
+    writeln!(buf, "{}search completed in {search_ms} ms{}\n", c.dim, c.reset)?;
     for (_score, metadata, bodies, sub_idx, date) in &results {
         writeln!(buf, "{}{separator}{}", c.dim, c.reset)?;
         let meta: serde_json::Value = serde_json::from_str(metadata).unwrap_or_default();
