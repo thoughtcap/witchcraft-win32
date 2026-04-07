@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 # Auto-detect platform and architecture
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
@@ -19,7 +21,7 @@ ifeq ($(UNAME_S),Darwin)
   endif
   PICKBRAIN_FEATURES := $(CLI_FEATURES),embed-assets
 else ifeq ($(UNAME_S),Linux)
-  CLI_FEATURES := t5-quantized,fbgemm,progress
+  CLI_FEATURES := t5-quantized,fbgemm,hybrid-dequant,progress
   NAPI_FEATURES := t5-quantized,fbgemm,napi
   RUSTFLAGS_EXTRA :=
   TARGET :=
@@ -42,7 +44,7 @@ env/pyvenv.cfg:
 	uv venv env
 
 env/bin/transformers: env/pyvenv.cfg
-	(source env/*/activate; uv pip install -r requirements.txt)
+	(source env/*/activate && uv pip install -r requirements.txt)
 
 # === Assets / weights ===
 
@@ -50,7 +52,7 @@ assets:
 	mkdir -p assets
 
 assets/config.json assets/tokenizer.json xtr.safetensors: env/bin/transformers | assets
-	(source env/*/activate; python downloadweights.py)
+	(source env/*/activate && python downloadweights.py)
 
 assets/xtr.gguf: xtr.safetensors | assets
 	cargo run -p quantize-tool xtr.safetensors assets/xtr.gguf
