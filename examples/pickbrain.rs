@@ -64,6 +64,104 @@ struct SearchResult {
     match_idx: usize,
 }
 
+// A turn from the original JSONL session file
+struct SessionTurn {
+    role: String,
+    text: String,
+    timestamp: String,
+}
+
+fn load_session_turns(jsonl_path: &str) -> Vec<SessionTurn> {
+    let raw = match std::fs::read_to_string(jsonl_path) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+
+    #[derive(serde::Deserialize)]
+    struct Entry {
+        #[serde(rename = "type")]
+        entry_type: String,
+        timestamp: Option<String>,
+        message: Option<Msg>,
+        #[serde(default, rename = "isMeta")]
+        is_meta: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct Msg {
+        role: Option<String>,
+        content: Option<MsgContent>,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum MsgContent {
+        Text(String),
+        Blocks(Vec<Block>),
+    }
+    #[derive(serde::Deserialize)]
+    struct Block {
+        #[serde(rename = "type")]
+        block_type: String,
+        #[serde(default)]
+        text: Option<String>,
+    }
+
+    let mut turns = Vec::new();
+    for line in raw.lines() {
+        let entry: Entry = match serde_json::from_str(line) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if entry.entry_type != "user" && entry.entry_type != "assistant" {
+            continue;
+        }
+        if entry.is_meta {
+            continue;
+        }
+        let msg = match entry.message {
+            Some(m) => m,
+            None => continue,
+        };
+        let role = match msg.role {
+            Some(r) if r == "user" || r == "assistant" => r,
+            _ => continue,
+        };
+        let text = match msg.content {
+            Some(MsgContent::Text(t)) => t,
+            Some(MsgContent::Blocks(blocks)) => {
+                blocks
+                    .iter()
+                    .filter(|b| b.block_type == "text")
+                    .filter_map(|b| b.text.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+            None => continue,
+        };
+        // Skip command/system messages
+        let trimmed = text.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("<command-")
+            || trimmed.starts_with("<local-command-")
+        {
+            continue;
+        }
+        // Strip XML tags from the text
+        let clean = regex::Regex::new(r"<[^>]+>")
+            .map(|re| re.replace_all(&text, "").to_string())
+            .unwrap_or(text);
+        let clean = clean.trim().to_string();
+        if clean.is_empty() {
+            continue;
+        }
+        turns.push(SessionTurn {
+            role,
+            text: clean,
+            timestamp: entry.timestamp.unwrap_or_default(),
+        });
+    }
+    turns
+}
+
 fn run_search(
     db_name: &PathBuf,
     assets: &PathBuf,
@@ -135,11 +233,11 @@ fn search_tui(
     assets: &PathBuf,
     q: &str,
     session: Option<&str>,
-) -> Result<()> {
+) -> Result<Option<(String, String)>> {
     let (results, search_ms) = run_search(db_name, assets, q, session)?;
     if results.is_empty() {
         eprintln!("no results");
-        return Ok(());
+        return Ok(None);
     }
 
     use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -164,13 +262,22 @@ fn search_tui(
     let mut list_state = ListState::default();
     list_state.select(Some(0));
     let mut scroll_offset: u16 = 0;
+    let mut resume_session: Option<(String, String)> = None;
+    let mut confirm_resume: Option<(String, String, String)> = None;
+    // Cache loaded session turns so we don't re-read the JSONL on every frame
+    let mut detail_cache: Option<(usize, Vec<SessionTurn>)> = None;
 
     loop {
         terminal.draw(|f| {
             let area = f.area();
+            let show_footer = confirm_resume.is_some() && matches!(view, View::Detail(_));
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(2), Constraint::Min(0)])
+                .constraints(if show_footer {
+                    vec![Constraint::Length(2), Constraint::Min(0), Constraint::Length(1)]
+                } else {
+                    vec![Constraint::Length(2), Constraint::Min(0), Constraint::Length(0)]
+                })
                 .split(area);
 
             // Header
@@ -187,13 +294,39 @@ fn search_tui(
                 ),
                 Span::styled(
                     match view {
-                        View::List => "↑↓ navigate  ⏎ open  q quit".to_string(),
-                        View::Detail(_) => "↑↓ scroll  esc back  q quit".to_string(),
+                        View::List => "↑↓ navigate  ⏎ open  q quit",
+                        View::Detail(idx) if !results[idx].session_id.is_empty() => {
+                            "↑↓ scroll  r resume session  esc back  q quit"
+                        }
+                        View::Detail(_) => "↑↓ scroll  esc back  q quit",
                     },
                     Style::default().fg(Color::DarkGray),
                 ),
             ]));
             f.render_widget(header, chunks[0]);
+
+            // Footer: resume confirmation
+            if show_footer {
+                let cwd = confirm_resume.as_ref()
+                    .map(|(_, _, c)| c.as_str())
+                    .unwrap_or("?");
+                let sid = confirm_resume.as_ref()
+                    .map(|(s, _, _)| s.as_str())
+                    .unwrap_or("?");
+                let footer = Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        format!(" Exit pickbrain and resume session {sid} in {cwd}? "),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "(Y/n)",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                f.render_widget(footer, chunks[2]);
+            }
 
             match view {
                 View::List => {
@@ -262,16 +395,57 @@ fn search_tui(
                     }
                     lines.push(Line::from(""));
 
-                    for (i, chunk) in r.bodies.iter().enumerate() {
-                        let style = if i == r.match_idx {
-                            Style::default().add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::DarkGray)
-                        };
-                        for line in chunk.lines().filter(|l| !l.is_empty()) {
-                            lines.push(Line::styled(format!("  {line}"), style));
+                    // If we have a JSONL path and a session, show the real conversation
+                    let turns = detail_cache
+                        .as_ref()
+                        .filter(|(ci, _)| *ci == idx)
+                        .map(|(_, t)| t.as_slice());
+
+                    if let Some(turns) = turns {
+                        for (i, turn) in turns.iter().enumerate() {
+                            let role_style = if turn.role == "user" {
+                                Style::default()
+                                    .fg(Color::Rgb(0, 255, 0))
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD)
+                            };
+                            let is_matched_turn = i == r.turn as usize;
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    if turn.role == "user" { "[User] " } else { "[Claude] " },
+                                    role_style,
+                                ),
+                                Span::styled(
+                                    format_date(&turn.timestamp),
+                                    Style::default().fg(Color::DarkGray),
+                                ),
+                            ]));
+                            let text_style = if is_matched_turn {
+                                Style::default()
+                            } else {
+                                Style::default().fg(Color::DarkGray)
+                            };
+                            for line in turn.text.lines() {
+                                lines.push(Line::styled(format!("  {line}"), text_style));
+                            }
+                            lines.push(Line::from(""));
                         }
-                        lines.push(Line::from(""));
+                    } else {
+                        // Fallback: show indexed bodies (for .md files etc.)
+                        for (i, chunk) in r.bodies.iter().enumerate() {
+                            let style = if i == r.match_idx {
+                                Style::default().add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(Color::DarkGray)
+                            };
+                            for line in chunk.lines().filter(|l| !l.is_empty()) {
+                                lines.push(Line::styled(format!("  {line}"), style));
+                            }
+                            lines.push(Line::from(""));
+                        }
                     }
 
                     let detail = Paragraph::new(lines)
@@ -284,8 +458,32 @@ fn search_tui(
 
         if let Event::Key(key) = event::read()? {
             match (&view, key.code, key.modifiers) {
-                (_, KeyCode::Char('q'), _) => break,
+                (_, KeyCode::Char('q') | KeyCode::Esc, _) if confirm_resume.is_some() => {
+                    confirm_resume = None;
+                }
+                (View::Detail(_), KeyCode::Char('q') | KeyCode::Esc, _) => {
+                    view = View::List;
+                }
+                (View::List, KeyCode::Char('q') | KeyCode::Esc, _) => break,
                 (_, KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                (_, KeyCode::Char('z'), KeyModifiers::CONTROL) => {
+                    disable_raw_mode()?;
+                    crossterm::execute!(
+                        std::io::stdout(),
+                        LeaveAlternateScreen,
+                        crossterm::cursor::Show
+                    )?;
+                    unsafe { libc::raise(libc::SIGTSTP); }
+                    // When resumed (fg), re-enter TUI
+                    enable_raw_mode()?;
+                    crossterm::execute!(
+                        std::io::stdout(),
+                        EnterAlternateScreen,
+                        crossterm::cursor::Hide
+                    )?;
+                    // Force full redraw
+                    terminal.clear()?;
+                }
 
                 // List view
                 (View::List, KeyCode::Down | KeyCode::Char('j'), _) => {
@@ -301,14 +499,30 @@ fn search_tui(
                     }
                 }
                 (View::List, KeyCode::Enter, _) => {
-                    scroll_offset = 0;
+                    let r = &results[selected];
+                    if !r.session_id.is_empty() && !r.path.is_empty() {
+                        let turns = load_session_turns(&r.path);
+                        // Scroll to the matched turn
+                        let target = r.turn as usize;
+                        let mut line_count: u16 = 3; // session header lines
+                        for (i, turn) in turns.iter().enumerate() {
+                            if i >= target {
+                                break;
+                            }
+                            line_count += 1; // role header
+                            line_count += turn.text.lines().count() as u16;
+                            line_count += 1; // blank line
+                        }
+                        scroll_offset = line_count.saturating_sub(2);
+                        detail_cache = Some((selected, turns));
+                    } else {
+                        scroll_offset = 0;
+                        detail_cache = None;
+                    }
                     view = View::Detail(selected);
                 }
 
                 // Detail view
-                (View::Detail(_), KeyCode::Esc, _) => {
-                    view = View::List;
-                }
                 (View::Detail(_), KeyCode::Down | KeyCode::Char('j'), _) => {
                     scroll_offset = scroll_offset.saturating_add(1);
                 }
@@ -321,6 +535,23 @@ fn search_tui(
                 (View::Detail(_), KeyCode::PageUp, _) => {
                     scroll_offset = scroll_offset.saturating_sub(20);
                 }
+                (View::Detail(idx), KeyCode::Char('r'), _) => {
+                    let r = &results[*idx];
+                    if !r.session_id.is_empty() {
+                        let cwd = read_cwd_from_jsonl(&r.path)
+                            .unwrap_or_else(|| "?".to_string());
+                        confirm_resume = Some((r.session_id.clone(), r.path.clone(), cwd));
+                    }
+                }
+                (View::Detail(_), KeyCode::Char('y') | KeyCode::Enter, _) => {
+                    if let Some((ref sid, ref path, _)) = confirm_resume {
+                        resume_session = Some((sid.clone(), path.clone()));
+                        break;
+                    }
+                }
+                (View::Detail(_), KeyCode::Char('n'), _) => {
+                    confirm_resume = None;
+                }
                 _ => {}
             }
         }
@@ -328,7 +559,30 @@ fn search_tui(
 
     disable_raw_mode()?;
     crossterm::execute!(std::io::stdout(), LeaveAlternateScreen)?;
-    Ok(())
+    Ok(resume_session)
+}
+
+fn read_cwd_from_jsonl(path: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    for line in raw.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
+            return Some(cwd.to_string());
+        }
+    }
+    None
+}
+
+fn launch_claude_resume(session_id: &str, jsonl_path: &str) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    if let Some(cwd) = read_cwd_from_jsonl(jsonl_path) {
+        let _ = std::env::set_current_dir(&cwd);
+    }
+    eprintln!("Resuming session {session_id}...");
+    let err = std::process::Command::new("claude")
+        .args(["--resume", session_id])
+        .exec();
+    Err(err.into())
 }
 
 fn first_line(text: &str) -> String {
@@ -494,6 +748,16 @@ fn main() -> Result<()> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--update" => {}
+            "--nuke" => {
+                let db_name = db_path();
+                if db_name.exists() {
+                    std::fs::remove_file(&db_name)?;
+                    eprintln!("removed {}", db_name.display());
+                } else {
+                    eprintln!("no database to remove");
+                }
+                std::process::exit(0);
+            }
             "--session" => {
                 session_filter = iter.next().cloned();
             }
@@ -546,13 +810,16 @@ fn main() -> Result<()> {
         let q = query_args.join(" ");
         use std::io::IsTerminal;
         if std::io::stdout().is_terminal() {
-            search_tui(&db_name, &assets, &q, session_filter.as_deref())?;
+            if let Some((sid, path)) = search_tui(&db_name, &assets, &q, session_filter.as_deref())? {
+                launch_claude_resume(&sid, &path)?;
+            }
         } else {
             search_plain(&db_name, &assets, &q, session_filter.as_deref())?;
         }
     } else if !do_update {
         eprintln!("Usage: pickbrain [--update] [--session UUID] <query>");
         eprintln!("       pickbrain --dump <UUID> [--turns N-M]");
+        eprintln!("       pickbrain --nuke");
     }
     Ok(())
 }
