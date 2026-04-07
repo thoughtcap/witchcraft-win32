@@ -86,15 +86,15 @@ winintel: ovdownload
 	RUSTFLAGS='-C target-feature=+avx2' cargo xwin build --release --target x86_64-pc-windows-msvc --features t5-openvino,fbgemm,progress
 
 ifdef TARGET
-  LIB_BIN := target/$(TARGET)/release/libwarp.dylib
+  LIB_BIN := target/$(TARGET)/release/libwitchcraft.dylib
 else
-  LIB_BIN := target/release/libwarp.dylib
+  LIB_BIN := target/release/libwitchcraft.dylib
 endif
 
 module:
 	cargo build --release --target aarch64-apple-darwin --features t5-quantized,metal,napi
 	cargo build --release --target x86_64-apple-darwin --features t5-quantized,fbgemm,hybrid-dequant,napi
-	lipo -create target/aarch64-apple-darwin/release/libwarp.dylib target/x86_64-apple-darwin/release/libwarp.dylib -output target/release/warp-macos-universal.node
+	lipo -create target/aarch64-apple-darwin/release/libwitchcraft.dylib target/x86_64-apple-darwin/release/libwitchcraft.dylib -output target/release/warp-macos-universal.node
 
 test: download
 	RUST_LOG=debug cargo llvm-cov nextest --release --features napi,$(CLI_FEATURES) --lcov --output-path lcov.info

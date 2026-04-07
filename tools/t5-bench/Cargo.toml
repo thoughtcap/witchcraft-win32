@@ -8,7 +8,7 @@ name = "t5-bench"
 path = "src/main.rs"
 
 [dependencies]
-warp = { path = "../..", default-features = false, features = ["t5-quantized"] }
+witchcraft = { path = "../..", default-features = false, features = ["t5-quantized"] }
 candle-core = { git = "https://github.com/huggingface/candle", rev = "0.9.2-alpha.2" }
 candle-nn = { git = "https://github.com/huggingface/candle", rev = "0.9.2-alpha.2" }
 candle-transformers = { git = "https://github.com/huggingface/candle", rev = "0.9.2-alpha.2" }
@@ -28,6 +28,6 @@ libc = { version = "0.2.147", optional = true }
 default = ["ov"]
 ov = ["dep:openvino"]
 accelerate = ["dep:libc", "dep:accelerate-src", "candle-core/accelerate"]
-hybrid-dequant = ["warp/hybrid-dequant"]
-fbgemm = ["warp/fbgemm"]
-metal = ["warp/metal"]
+hybrid-dequant = ["witchcraft/hybrid-dequant"]
+fbgemm = ["witchcraft/fbgemm"]
+metal = ["witchcraft/metal"]

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use text_splitter::{MarkdownSplitter, TextSplitter};
 use uuid::Uuid;
 
-use warp::DB;
+use witchcraft::DB;
 
 const MIN_CHUNK_CODEPOINTS: usize = 5;
 const MAX_CHUNK_CODEPOINTS: usize = 4000;

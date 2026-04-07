@@ -3,7 +3,7 @@ mod fast_ops;
 #[cfg(feature = "ov")]
 mod openvino_t5;
 #[cfg(feature = "fbgemm")]
-use warp::quantized_t5 as fbgemm_t5;
+use witchcraft::quantized_t5 as fbgemm_t5;
 
 use anyhow::Result;
 use candle_core::{Device, Tensor};

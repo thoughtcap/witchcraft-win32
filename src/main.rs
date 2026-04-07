@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 mod histogram;
 
-use warp::DB;
+use witchcraft::DB;
 
 struct SimpleLogger;
 impl log::Log for SimpleLogger {
@@ -77,7 +77,7 @@ pub fn read_csv(db: &mut DB, csvname: std::path::PathBuf) -> Result<()> {
 
 pub fn bulk_search(
     db: &DB,
-    embedder: Option<&warp::Embedder>,
+    embedder: Option<&witchcraft::Embedder>,
     csvname: std::path::PathBuf,
     outputname: std::path::PathBuf,
     use_fulltext: bool,
@@ -105,7 +105,7 @@ pub fn bulk_search(
         let now = std::time::Instant::now();
         let fts_start = std::time::Instant::now();
         let fts_matches = if use_fulltext {
-            warp::fulltext_search(db, &question, top_k, None)?
+            witchcraft::fulltext_search(db, &question, top_k, None)?
         } else {
             vec![]
         };
@@ -124,7 +124,7 @@ pub fn bulk_search(
             embedder_histogram.record(embedder_latency_ms);
 
             let match_start = std::time::Instant::now();
-            let matches = warp::match_centroids(db, &qe, 0.0, top_k, None).unwrap();
+            let matches = witchcraft::match_centroids(db, &qe, 0.0, top_k, None).unwrap();
             debug!(
                 "match_centroids call took {} ms.",
                 match_start.elapsed().as_millis()
@@ -133,18 +133,18 @@ pub fn bulk_search(
         } else {
             vec![]
         };
-        let sem_idxs: Vec<warp::DocPtr> = sem_matches
+        let sem_idxs: Vec<witchcraft::DocPtr> = sem_matches
             .iter()
             .map(|&(_, idx, sub_idx)| (idx, sub_idx))
             .collect();
 
         let fusion_start = std::time::Instant::now();
         let mut fused = if use_fulltext {
-            let fts_idxs: Vec<warp::DocPtr> = fts_matches
+            let fts_idxs: Vec<witchcraft::DocPtr> = fts_matches
                 .iter()
                 .map(|&(_, idx, sub_idx)| (idx, sub_idx))
                 .collect();
-            warp::reciprocal_rank_fusion(&fts_idxs, &sem_idxs, 60.0)
+            witchcraft::reciprocal_rank_fusion(&fts_idxs, &sem_idxs, 60.0)
         } else {
             sem_idxs
         };
@@ -196,27 +196,27 @@ fn main() -> Result<()> {
         let csvname = &args[2];
         read_csv(&mut db, csvname.into()).unwrap();
     } else if args.len() == 2 && &args[1] == "embed" {
-        let device = warp::make_device();
-        let embedder = warp::Embedder::new(&device, &assets).unwrap();
+        let device = witchcraft::make_device();
+        let embedder = witchcraft::Embedder::new(&device, &assets).unwrap();
         let db = DB::new(db_name).unwrap();
-        let _got = warp::embed_chunks(&db, &embedder, None).unwrap();
+        let _got = witchcraft::embed_chunks(&db, &embedder, None).unwrap();
     } else if args.len() == 2 && &args[1] == "index" {
-        let device = warp::make_device();
+        let device = witchcraft::make_device();
         let db = DB::new(db_name).unwrap();
-        warp::index_chunks(&db, &device).unwrap();
+        witchcraft::index_chunks(&db, &device).unwrap();
     } else if args.len() == 2 && &args[1] == "reindex" {
-        let device = warp::make_device();
+        let device = witchcraft::make_device();
         let db = DB::new(db_name).unwrap();
-        warp::full_index(&db, &device).unwrap();
+        witchcraft::full_index(&db, &device).unwrap();
     } else if args.len() >= 3 && (args[1] == "query" || args[1] == "hybrid") {
-        let device = warp::make_device();
-        let embedder = warp::Embedder::new(&device, &assets).unwrap();
-        let mut cache = warp::EmbeddingsCache::new(1);
+        let device = witchcraft::make_device();
+        let embedder = witchcraft::Embedder::new(&device, &assets).unwrap();
+        let mut cache = witchcraft::EmbeddingsCache::new(1);
         let db = DB::new_reader(db_name).unwrap();
         let q = &args[2..].join(" ");
         let use_fulltext = args[1] == "hybrid";
         let results =
-            warp::search(&db, &embedder, &mut cache, q, 0.7, 10, use_fulltext, None).unwrap();
+            witchcraft::search(&db, &embedder, &mut cache, q, 0.7, 10, use_fulltext, None).unwrap();
         for (score, _metadata, bodies, sub_idx, _date) in results {
             let idx = (sub_idx as usize).min(bodies.len().saturating_sub(1));
             let body = &bodies[idx];
@@ -229,8 +229,8 @@ fn main() -> Result<()> {
         let db = DB::new_reader(db_name).unwrap();
         let use_fulltext = args[1] == "hybridcsv" || args[1] == "fulltextcsv";
         let embedder = if args[1] != "fulltextcsv" {
-            let device = warp::make_device();
-            Some(warp::Embedder::new(&device, &assets).unwrap())
+            let device = witchcraft::make_device();
+            Some(witchcraft::Embedder::new(&device, &assets).unwrap())
         } else {
             None
         };
@@ -245,12 +245,12 @@ fn main() -> Result<()> {
         )
         .unwrap();
     } else if args.len() >= 4 && &args[1] == "score" {
-        let device = warp::make_device();
-        let embedder = warp::Embedder::new(&device, &assets).unwrap();
-        let mut cache = warp::EmbeddingsCache::new(1);
+        let device = witchcraft::make_device();
+        let embedder = witchcraft::Embedder::new(&device, &assets).unwrap();
+        let mut cache = witchcraft::EmbeddingsCache::new(1);
         let sentences: Vec<String> = std::env::args().skip(3).collect();
         let scores =
-            warp::score_query_sentences(&embedder, &mut cache, &args[2], &sentences).unwrap();
+            witchcraft::score_query_sentences(&embedder, &mut cache, &args[2], &sentences).unwrap();
         for (i, score) in scores.iter().enumerate() {
             println!("`{}': score={}", args[3 + i], *score);
         }

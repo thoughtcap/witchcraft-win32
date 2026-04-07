@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 mod claude_code;
 
-use warp::{DB, Embedder};
+use witchcraft::{DB, Embedder};
 
 struct SimpleLogger;
 impl log::Log for SimpleLogger {
@@ -45,10 +45,10 @@ fn ingest(db_name: &PathBuf) -> Result<bool> {
 }
 
 fn embed_and_index(db: &DB, embedder: &Embedder, device: &candle_core::Device) -> Result<()> {
-    let embedded = warp::embed_chunks(db, embedder, None)?;
+    let embedded = witchcraft::embed_chunks(db, embedder, None)?;
     if embedded > 0 {
         eprintln!("embedded {embedded} chunks");
-        warp::index_chunks(db, device)?;
+        witchcraft::index_chunks(db, device)?;
         eprintln!("index rebuilt");
     }
     Ok(())
@@ -170,16 +170,16 @@ fn run_search(
     q: &str,
     session: Option<&str>,
 ) -> Result<(Vec<SearchResult>, u128)> {
-    use warp::types::*;
-    let device = warp::make_device();
-    let embedder = warp::Embedder::new(&device, assets)?;
+    use witchcraft::types::*;
+    let device = witchcraft::make_device();
+    let embedder = witchcraft::Embedder::new(&device, assets)?;
 
     {
         let db_rw = DB::new(db_name.clone()).unwrap();
         embed_and_index(&db_rw, &embedder, &device)?;
     }
 
-    let mut cache = warp::EmbeddingsCache::new(1);
+    let mut cache = witchcraft::EmbeddingsCache::new(1);
     let db = DB::new_reader(db_name.clone()).unwrap();
     let sql_filter = session.map(|id| SqlStatementInternal {
         statement_type: SqlStatementType::Condition,
@@ -192,7 +192,7 @@ fn run_search(
         statements: None,
     });
     let now = std::time::Instant::now();
-    let results = warp::search(
+    let results = witchcraft::search(
         &db,
         &embedder,
         &mut cache,
@@ -790,7 +790,7 @@ fn main() -> Result<()> {
             }
             Ok(true) => {
                 if do_update && !has_query {
-                    let device = warp::make_device();
+                    let device = witchcraft::make_device();
                     let embedder = Embedder::new(&device, &assets)?;
                     let db_rw = DB::new(db_name.clone()).unwrap();
                     embed_and_index(&db_rw, &embedder, &device)?;
