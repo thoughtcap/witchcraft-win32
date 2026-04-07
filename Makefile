@@ -75,9 +75,10 @@ pickbrain: download
 	ln -sf target/$(TARGET)/release/examples/pickbrain ./pickbrain
 
 pickbrain-install: pickbrain
-	mkdir -p ~/bin ~/.claude/skills/pickbrain
+	mkdir -p ~/bin ~/.claude/skills/pickbrain ~/.codex/skills/pickbrain
 	ln -sf $(realpath pickbrain) ~/bin/pickbrain
 	cp skills/pickbrain/SKILL.md ~/.claude/skills/pickbrain/SKILL.md
+	cp skills/pickbrain-codex/SKILL.md ~/.codex/skills/pickbrain/SKILL.md
 
 macintel:
 	RUSTFLAGS='-C target-cpu=haswell' cargo build --release --target x86_64-apple-darwin --features t5-quantized,fbgemm,hybrid-dequant,progress
