@@ -378,7 +378,8 @@ fn main() -> Result<()> {
                         .unwrap_or_default();
                     if age.as_secs() > 86400 {
                         let hours = age.as_secs() / 3600;
-                        eprintln!("Database is {hours}h old. Consider: pickbrain --update <query>");
+                        eprintln!("Database is {hours}h old. Run: pickbrain --update <query>");
+                        std::process::exit(1);
                     }
                 }
             }
