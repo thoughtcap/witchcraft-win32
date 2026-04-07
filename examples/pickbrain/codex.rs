@@ -1,7 +1,6 @@
 use anyhow::Result;
 use regex::Regex;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use text_splitter::TextSplitter;
@@ -265,27 +264,7 @@ fn file_mtime_ms(path: &Path) -> Option<i64> {
         .map(|d| d.as_millis() as i64)
 }
 
-fn load_watermarks(db: &DB) -> HashMap<String, i64> {
-    let mut watermarks = HashMap::new();
-    let mut stmt = match db.query(
-        "SELECT json_extract(metadata, '$.path'), max(json_extract(metadata, '$.mtime_ms'))
-         FROM document
-         WHERE json_extract(metadata, '$.mtime_ms') IS NOT NULL
-         GROUP BY json_extract(metadata, '$.path')",
-    ) {
-        Ok(s) => s,
-        Err(_) => return watermarks,
-    };
-    let rows = stmt.query_map((), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    });
-    if let Ok(rows) = rows {
-        for row in rows.flatten() {
-            watermarks.insert(row.0, row.1);
-        }
-    }
-    watermarks
-}
+use crate::watermark;
 
 /// Walk ~/.codex/sessions/ recursively for .jsonl files
 fn collect_session_files(base: &Path) -> Vec<PathBuf> {
@@ -317,27 +296,24 @@ pub fn ingest_codex(db: &mut DB) -> Result<usize> {
         return Ok(0);
     }
 
-    let watermarks = load_watermarks(db);
+    let wm_path = watermark::codex_path();
+    let wm_ts = watermark::mtime_ms(&wm_path);
     let mut session_count = 0usize;
 
     for jsonl_path in collect_session_files(&sessions_dir) {
-        let path_str = jsonl_path.to_string_lossy().to_string();
+        if !watermark::file_newer_than(&jsonl_path, wm_ts) {
+            continue;
+        }
         let mtime_ms = file_mtime_ms(&jsonl_path).unwrap_or(0);
-        let changed = match watermarks.get(&path_str) {
-            Some(&prev_ms) => mtime_ms > prev_ms,
-            None => true,
-        };
-
-        if changed {
-            println!("{}", jsonl_path.display());
-            match ingest_session(db, &jsonl_path, mtime_ms) {
-                Ok(n) => session_count += n,
-                Err(e) => {
-                    log::warn!("failed to ingest codex {}: {e}", jsonl_path.display());
-                }
+        println!("{}", jsonl_path.display());
+        match ingest_session(db, &jsonl_path, mtime_ms) {
+            Ok(n) => session_count += n,
+            Err(e) => {
+                log::warn!("failed to ingest codex {}: {e}", jsonl_path.display());
             }
         }
     }
 
+    watermark::touch(&wm_path);
     Ok(session_count)
 }

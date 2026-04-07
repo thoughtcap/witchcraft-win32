@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 mod claude_code;
 mod codex;
+mod watermark;
 
 use witchcraft::{DB, Embedder};
 
@@ -866,6 +867,8 @@ fn main() -> Result<()> {
                 } else {
                     eprintln!("no database to remove");
                 }
+                watermark::remove(&watermark::claude_path());
+                watermark::remove(&watermark::codex_path());
                 std::process::exit(0);
             }
             "--session" => {

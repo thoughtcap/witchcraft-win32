@@ -1,7 +1,6 @@
 use anyhow::Result;
 use regex::Regex;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use text_splitter::{MarkdownSplitter, TextSplitter};
@@ -468,27 +467,7 @@ fn split_markdown(text: &str) -> Vec<String> {
     splitter.chunks(text).map(|c| c.to_string()).collect()
 }
 
-fn load_watermarks(db: &DB) -> HashMap<String, i64> {
-    let mut watermarks = HashMap::new();
-    let mut stmt = match db.query(
-        "SELECT json_extract(metadata, '$.path'), max(json_extract(metadata, '$.mtime_ms'))
-         FROM document
-         WHERE json_extract(metadata, '$.mtime_ms') IS NOT NULL
-         GROUP BY json_extract(metadata, '$.path')",
-    ) {
-        Ok(s) => s,
-        Err(_) => return watermarks,
-    };
-    let rows = stmt.query_map((), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-    });
-    if let Ok(rows) = rows {
-        for row in rows.flatten() {
-            watermarks.insert(row.0, row.1);
-        }
-    }
-    watermarks
-}
+use crate::watermark;
 
 pub fn ingest_claude_code(db: &mut DB) -> Result<(usize, usize, usize)> {
     let home = std::env::var("HOME").unwrap_or_default();
@@ -499,7 +478,8 @@ pub fn ingest_claude_code(db: &mut DB) -> Result<(usize, usize, usize)> {
         return Ok((0, 0, 0));
     }
 
-    let watermarks = load_watermarks(db);
+    let wm_path = watermark::claude_path();
+    let wm_ts = watermark::mtime_ms(&wm_path);
 
     let mut session_count = 0usize;
     let mut memory_count = 0usize;
@@ -530,26 +510,20 @@ pub fn ingest_claude_code(db: &mut DB) -> Result<(usize, usize, usize)> {
         let mut authored_paths: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
         for jsonl_path in &jsonl_files {
-            let path_str = jsonl_path.to_string_lossy().to_string();
+            if !watermark::file_newer_than(jsonl_path, wm_ts) {
+                continue;
+            }
             let mtime_ms = file_mtime_ms(jsonl_path).unwrap_or(0);
-            let changed = match watermarks.get(&path_str) {
-                Some(&prev_ms) => mtime_ms > prev_ms,
-                None => true,
-            };
-
-            if changed {
-                println!("{}", jsonl_path.display());
-                // Only scan changed sessions for authored files
-                for p in extract_written_paths(jsonl_path) {
-                    if p.extension().is_some_and(|ext| ext == "md") && p.is_file() {
-                        authored_paths.insert(p);
-                    }
+            println!("{}", jsonl_path.display());
+            for p in extract_written_paths(jsonl_path) {
+                if p.extension().is_some_and(|ext| ext == "md") && p.is_file() {
+                    authored_paths.insert(p);
                 }
-                match ingest_session(db, jsonl_path, &project_name, mtime_ms) {
-                    Ok(n) => session_count += n,
-                    Err(e) => {
-                        log::warn!("failed to ingest {}: {e}", jsonl_path.display());
-                    }
+            }
+            match ingest_session(db, jsonl_path, &project_name, mtime_ms) {
+                Ok(n) => session_count += n,
+                Err(e) => {
+                    log::warn!("failed to ingest {}: {e}", jsonl_path.display());
                 }
             }
         }
@@ -565,17 +539,12 @@ pub fn ingest_claude_code(db: &mut DB) -> Result<(usize, usize, usize)> {
             md_files.sort();
 
             for md_path in &md_files {
-                // Don't also ingest memory files as authored
                 authored_paths.remove(md_path);
-
-                let path_str = md_path.to_string_lossy().to_string();
-                let mtime_ms = file_mtime_ms(md_path).unwrap_or(0);
-                if let Some(&prev_ms) = watermarks.get(&path_str) {
-                    if mtime_ms <= prev_ms {
-                        continue;
-                    }
+                if !watermark::file_newer_than(md_path, wm_ts) {
+                    continue;
                 }
                 println!("{}", md_path.display());
+                let mtime_ms = file_mtime_ms(md_path).unwrap_or(0);
                 match ingest_memory_file(db, md_path, &project_name, mtime_ms) {
                     Ok(true) => memory_count += 1,
                     Ok(false) => {}
@@ -590,13 +559,10 @@ pub fn ingest_claude_code(db: &mut DB) -> Result<(usize, usize, usize)> {
         let mut authored_sorted: Vec<PathBuf> = authored_paths.into_iter().collect();
         authored_sorted.sort();
         for md_path in &authored_sorted {
-            let path_str = md_path.to_string_lossy().to_string();
-            let mtime_ms = file_mtime_ms(md_path).unwrap_or(0);
-            if let Some(&prev_ms) = watermarks.get(&path_str) {
-                if mtime_ms <= prev_ms {
-                    continue;
-                }
+            if !watermark::file_newer_than(md_path, wm_ts) {
+                continue;
             }
+            let mtime_ms = file_mtime_ms(md_path).unwrap_or(0);
             println!("{}", md_path.display());
             match ingest_authored_file(db, md_path, &project_name, mtime_ms) {
                 Ok(true) => authored_count += 1,
@@ -608,6 +574,7 @@ pub fn ingest_claude_code(db: &mut DB) -> Result<(usize, usize, usize)> {
         }
     }
 
+    watermark::touch(&wm_path);
     Ok((session_count, memory_count, authored_count))
 }
 
