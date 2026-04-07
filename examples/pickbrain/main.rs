@@ -4,6 +4,8 @@ use std::env;
 use std::io::Write;
 use std::path::PathBuf;
 
+mod claude_code;
+
 use warp::{DB, Embedder};
 
 struct SimpleLogger;
@@ -34,7 +36,7 @@ fn assets_path() -> PathBuf {
 
 fn ingest(db_name: &PathBuf) -> Result<bool> {
     let mut db = DB::new(db_name.clone()).unwrap();
-    let (sessions, memories, authored) = warp::claude_code::ingest_claude_code(&mut db)?;
+    let (sessions, memories, authored) = claude_code::ingest_claude_code(&mut db)?;
     if sessions + memories + authored == 0 {
         return Ok(false);
     }

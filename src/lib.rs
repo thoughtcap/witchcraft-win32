@@ -57,8 +57,6 @@ pub use types::SqlStatementInternal;
 mod sql_generator;
 use sql_generator::build_filter_sql_and_params;
 
-pub mod claude_code;
-
 #[cfg(feature = "napi")]
 #[allow(dead_code)]
 mod napi;
