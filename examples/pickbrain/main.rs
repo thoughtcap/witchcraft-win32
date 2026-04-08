@@ -42,6 +42,7 @@ fn ingest(db_name: &PathBuf) -> Result<bool> {
     let codex_sessions = codex::ingest_codex(&mut db)?;
     let total = sessions + memories + authored + codex_sessions;
     if total == 0 {
+        eprintln!("No new sessions to ingest.");
         return Ok(false);
     }
     eprintln!(
@@ -151,11 +152,6 @@ fn run_search(
     use witchcraft::types::*;
     let device = witchcraft::make_device();
     let embedder = witchcraft::Embedder::new(&device, assets)?;
-
-    {
-        let db_rw = DB::new(db_name.clone()).unwrap();
-        embed_and_index(&db_rw, &embedder, &device)?;
-    }
 
     let mut cache = witchcraft::EmbeddingsCache::new(1);
     let db = DB::new_reader(db_name.clone()).unwrap();
@@ -884,12 +880,19 @@ fn main() -> Result<()> {
     let db_name = db_path();
     let assets = assets_path();
 
-    if let Err(e) = ingest(&db_name) {
-        if !db_name.exists() {
-            eprintln!("No database found. Run: pickbrain <query>");
+    match ingest(&db_name) {
+        Ok(have_changes) => {
+            if have_changes {
+                let db_rw = DB::new(db_name.clone()).unwrap();
+                let device = witchcraft::make_device();
+                let embedder = witchcraft::Embedder::new(&device, &assets)?;
+                embed_and_index(&db_rw, &embedder, &device)?;
+            }
+        },
+        Err(e) => {
+            eprintln!("warning: ingest failed: {e}");
             std::process::exit(1);
         }
-        eprintln!("warning: ingest failed: {e}");
     }
 
     if let Some(ref sid) = dump_session {
