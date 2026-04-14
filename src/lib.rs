@@ -976,7 +976,8 @@ pub fn match_centroids(
     let now = std::time::Instant::now();
     let mut sub_scores = vec![0.0f32; n];
     sub_scores.copy_from_slice(&missing_similarities);
-
+    let mut doc_scores = vec![0.0f32; n];
+    doc_scores.copy_from_slice(&missing_similarities);
 
     db.execute(
         "CREATE TEMPORARY TABLE temp2(rowid INTEGER, sub_idx INTEGER, score FLOAT, UNIQUE(rowid, sub_idx))",
@@ -1001,6 +1002,11 @@ pub fn match_centroids(
                 if sub_score > cutoff {
                     let _ = insert_temp_query.execute((prev_idx, prev_sub_idx, sub_score));
                 }
+                vmax_inplace(&mut doc_scores, &sub_scores);
+                sub_scores.copy_from_slice(&doc_scores);
+            }
+            if idx_change || is_last {
+                doc_scores.copy_from_slice(&missing_similarities);
                 sub_scores.copy_from_slice(&missing_similarities);
             }
         }
