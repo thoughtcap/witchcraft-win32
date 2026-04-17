@@ -400,7 +400,7 @@ fn search_tui(
 
             // Header
             let help_text = if searching {
-                "type query  ⏎ search  esc cancel"
+                "type to search  esc done"
             } else {
                 match view {
                     View::List => "↑↓/jk navigate  ⏎ open  / search  q quit",
@@ -427,8 +427,13 @@ fn search_tui(
 
             // Search input bar
             if show_search {
+                let bar_style = if searching {
+                    Style::default().bg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
                 let search_bar = Paragraph::new(Line::from(vec![
-                    Span::styled("/ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("/ ", Style::default().fg(if searching { Color::White } else { Color::DarkGray })),
                     Span::styled(
                         &search_filter,
                         Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -438,7 +443,7 @@ fn search_tui(
                     } else {
                         Span::raw("")
                     },
-                ]));
+                ])).style(bar_style);
                 f.render_widget(search_bar, chunks[1]);
             }
 
@@ -529,11 +534,14 @@ fn search_tui(
                         })
                         .collect();
 
-                    let list = ratatui::widgets::List::new(items).highlight_style(
+                    let highlight = if searching {
+                        Style::default()
+                    } else {
                         Style::default()
                             .bg(Color::DarkGray)
-                            .add_modifier(Modifier::BOLD),
-                    );
+                            .add_modifier(Modifier::BOLD)
+                    };
+                    let list = ratatui::widgets::List::new(items).highlight_style(highlight);
                     f.render_stateful_widget(list, content_area, &mut list_state);
                 }
                 View::Detail(idx) => {
@@ -642,53 +650,62 @@ fn search_tui(
             // Search mode: live-search as the user types
             if searching {
                 match (key.code, key.modifiers) {
-                    (KeyCode::Esc, _) => {
-                        searching = false;
-                        search_filter.clear();
-                        // Restore pre-search state
-                        if let Some((q, r, ms)) = saved_search.take() {
-                            active_query = q;
-                            results = r;
-                            search_ms = ms;
-                            selected = 0;
-                            detail_cache = None;
-                            view = View::List;
-                        }
-                        continue;
-                    }
-                    (KeyCode::Enter, _) => {
+                    (KeyCode::Esc, _) | (KeyCode::Enter, _) => {
                         searching = false;
                         saved_search = None;
                         continue;
                     }
+                    (KeyCode::Down, _) | (KeyCode::Up, _) => {
+                        searching = false;
+                        saved_search = None;
+                        view = View::List;
+                        // Fall through to normal arrow key handling below
+                    }
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
-                    (KeyCode::Backspace, _) => { search_filter.pop(); }
-                    (KeyCode::Char(c), _) => { search_filter.push(c); }
-                    _ => {}
-                }
-                // Live search: update results as the user types (>= 3 chars)
-                if search_filter.chars().count() >= 3 {
-                    if let Ok((new_results, ms)) = run_search_with(
-                        &db, &embedder, &search_filter, session, branch, exclude, since_ms,
-                    ) {
-                        active_query = search_filter.clone();
-                        results = new_results;
-                        search_ms = ms;
-                        selected = 0;
-                        detail_cache = None;
-                        view = View::List;
+                    (KeyCode::Backspace, _) => {
+                        search_filter.pop();
+                        // Live search: update results as the user types (>= 3 chars)
+                        if search_filter.chars().count() >= 3 {
+                            if let Ok((new_results, ms)) = run_search_with(
+                                &db, &embedder, &search_filter, session, branch, exclude, since_ms,
+                            ) {
+                                active_query = search_filter.clone();
+                                results = new_results;
+                                search_ms = ms;
+                                selected = 0;
+                                detail_cache = None;
+                                view = View::List;
+                            }
+                        } else if search_filter.is_empty() {
+                            if let Some((ref q, ref r, ms)) = saved_search {
+                                active_query = q.clone();
+                                results = r.clone();
+                                search_ms = ms;
+                                selected = 0;
+                                detail_cache = None;
+                                view = View::List;
+                            }
+                        }
+                        continue;
                     }
-                } else if search_filter.is_empty() {
-                    if let Some((ref q, ref r, ms)) = saved_search {
-                        active_query = q.clone();
-                        results = r.clone();
-                        search_ms = ms;
-                        selected = 0;
-                        detail_cache = None;
-                        view = View::List;
+                    (KeyCode::Char(c), _) => {
+                        search_filter.push(c);
+                        if search_filter.chars().count() >= 3 {
+                            if let Ok((new_results, ms)) = run_search_with(
+                                &db, &embedder, &search_filter, session, branch, exclude, since_ms,
+                            ) {
+                                active_query = search_filter.clone();
+                                results = new_results;
+                                search_ms = ms;
+                                selected = 0;
+                                detail_cache = None;
+                                view = View::List;
+                            }
+                        }
+                        continue;
                     }
+                    _ => { continue; }
                 }
-                continue;
             }
 
             match (&view, key.code, key.modifiers) {
@@ -1240,7 +1257,7 @@ fn pick_and_resume(
                 format!("{} results", active_sessions.len())
             };
             let help_text = if searching {
-                "type query  ⏎ search  esc cancel"
+                "type to search  esc done"
             } else {
                 "↑↓/jk navigate  ⏎ resume  / filter  q quit"
             };
@@ -1261,8 +1278,13 @@ fn pick_and_resume(
 
             // Search bar
             if show_search {
+                let bar_style = if searching {
+                    Style::default().bg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
                 let search_line = Line::from(vec![
-                    Span::styled("/ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("/ ", Style::default().fg(if searching { Color::White } else { Color::DarkGray })),
                     Span::styled(
                         &query,
                         Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -1273,7 +1295,7 @@ fn pick_and_resume(
                         Span::raw("")
                     },
                 ]);
-                f.render_widget(ratatui::widgets::Paragraph::new(search_line), chunks[1]);
+                f.render_widget(ratatui::widgets::Paragraph::new(search_line).style(bar_style), chunks[1]);
             }
 
             let width = chunks[2].width as usize;
@@ -1294,11 +1316,14 @@ fn pick_and_resume(
                 })
                 .collect();
 
-            let list = ratatui::widgets::List::new(items).highlight_style(
+            let highlight = if searching {
+                Style::default()
+            } else {
                 Style::default()
                     .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            );
+                    .add_modifier(Modifier::BOLD)
+            };
+            let list = ratatui::widgets::List::new(items).highlight_style(highlight);
             f.render_stateful_widget(list, chunks[2], &mut list_state);
         })?;
 
@@ -1306,41 +1331,56 @@ fn pick_and_resume(
             // Search mode: live-search as the user types
             if searching {
                 match (key.code, key.modifiers) {
-                    (KeyCode::Esc, _) => {
+                    (KeyCode::Esc, _) | (KeyCode::Enter, _) => {
                         searching = false;
-                        query.clear();
-                        active_sessions = sessions.clone();
-                        selected = 0;
                         continue;
                     }
-                    (KeyCode::Enter, _) => {
+                    (KeyCode::Down, _) | (KeyCode::Up, _) => {
                         searching = false;
-                        continue;
+                        // Fall through to normal arrow key handling below
                     }
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
-                    (KeyCode::Backspace, _) => { query.pop(); }
-                    (KeyCode::Char(c), _) => { query.push(c); }
-                    _ => {}
-                }
-                // Live search: update results as the user types (>= 3 chars)
-                if query.chars().count() >= 3 {
-                    let engine = search_engine.get_or_insert_with(|| {
-                        let device = witchcraft::make_device();
-                        let embedder = witchcraft::Embedder::new(&device, assets).unwrap();
-                        let db = DB::new_reader(db_name.clone()).unwrap();
-                        (embedder, db)
-                    });
-                    if let Ok((search_results, _)) = run_search_with(
-                        &engine.1, &engine.0, &query, None, branch_filter, &[], None,
-                    ) {
-                        active_sessions = results_to_sessions(&search_results);
-                        selected = 0;
+                    (KeyCode::Backspace, _) => {
+                        query.pop();
+                        if query.chars().count() >= 3 {
+                            let engine = search_engine.get_or_insert_with(|| {
+                                let device = witchcraft::make_device();
+                                let embedder = witchcraft::Embedder::new(&device, assets).unwrap();
+                                let db = DB::new_reader(db_name.clone()).unwrap();
+                                (embedder, db)
+                            });
+                            if let Ok((search_results, _)) = run_search_with(
+                                &engine.1, &engine.0, &query, None, branch_filter, &[], None,
+                            ) {
+                                active_sessions = results_to_sessions(&search_results);
+                                selected = 0;
+                            }
+                        } else if query.is_empty() {
+                            active_sessions = sessions.clone();
+                            selected = 0;
+                        }
+                        continue;
                     }
-                } else if query.is_empty() {
-                    active_sessions = sessions.clone();
-                    selected = 0;
+                    (KeyCode::Char(c), _) => {
+                        query.push(c);
+                        if query.chars().count() >= 3 {
+                            let engine = search_engine.get_or_insert_with(|| {
+                                let device = witchcraft::make_device();
+                                let embedder = witchcraft::Embedder::new(&device, assets).unwrap();
+                                let db = DB::new_reader(db_name.clone()).unwrap();
+                                (embedder, db)
+                            });
+                            if let Ok((search_results, _)) = run_search_with(
+                                &engine.1, &engine.0, &query, None, branch_filter, &[], None,
+                            ) {
+                                active_sessions = results_to_sessions(&search_results);
+                                selected = 0;
+                            }
+                        }
+                        continue;
+                    }
+                    _ => { continue; }
                 }
-                continue;
             }
 
             match (key.code, key.modifiers) {
