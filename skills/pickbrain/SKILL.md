@@ -55,6 +55,7 @@ To filter by git branch:
 
 ```bash
 pickbrain --branch <branch-name> "<query>"
+pickbrain --branch . "<query>"          # . = current branch
 ```
 
 To exclude specific sessions from results (comma-separated or repeated):

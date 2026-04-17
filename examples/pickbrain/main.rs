@@ -846,7 +846,7 @@ fn git_working_tree_clean() -> bool {
         .unwrap_or(false)
 }
 
-fn launch_resume(s: &BranchSession) -> Result<()> {
+fn launch_resume(s: &BranchSession, checkout_branch: bool) -> Result<()> {
     use std::os::unix::process::CommandExt;
     // cwd is the authoritative path; project (leading / stripped) is the fallback
     // for sessions ingested before cwd was added to metadata.
@@ -864,7 +864,7 @@ fn launch_resume(s: &BranchSession) -> Result<()> {
         let _ = std::env::set_current_dir(&dir);
     }
     let branch = &s.branch;
-    if !branch.is_empty() {
+    if checkout_branch && !branch.is_empty() {
         let current = current_git_branch().unwrap_or_default();
         if current != *branch {
             if !git_working_tree_clean() {
@@ -1173,7 +1173,7 @@ fn pick_and_resume(
         if !std::path::Path::new(&s.path).exists() {
             anyhow::bail!("session file no longer exists: {}", s.path);
         }
-        launch_resume(s)?;
+        launch_resume(s, true)?;
         return Ok(());
     }
 
@@ -1381,75 +1381,9 @@ fn pick_and_resume(
         if !std::path::Path::new(&s.path).exists() {
             anyhow::bail!("session file no longer exists: {}", s.path);
         }
-        launch_resume(s)?;
+        launch_resume(s, true)?;
     }
     Ok(())
-}
-
-fn resume_for_branch(db_name: &PathBuf, assets: &PathBuf, branch: &str) -> Result<()> {
-    let sessions = find_sessions_for_branch(db_name, branch)?;
-    pick_and_resume(sessions, &format!("on branch '{branch}'"), db_name, assets, Some(branch))
-}
-
-fn find_sessions_for_project(db_name: &PathBuf, cwd: &str) -> Result<Vec<BranchSession>> {
-    let db = DB::new_reader(db_name.clone()).unwrap();
-    let mut stmt = db.query(
-        "SELECT metadata, body, date FROM document
-         WHERE json_extract(metadata, '$.session_id') IS NOT NULL
-         ORDER BY date DESC",
-    )?;
-    let rows: Vec<(String, String, String)> = stmt
-        .query_map((), |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    let mut seen = std::collections::HashSet::new();
-    let mut sessions = Vec::new();
-
-    // Claude Code stores the full cwd (sans leading /) as "project".
-    // Codex stores just the directory basename as "project" but has a
-    // separate "cwd" field with the full path. Match against both.
-    let cwd_canonical = cwd.trim_start_matches('/');
-
-    for (metadata, body, date) in &rows {
-        let meta: serde_json::Value = serde_json::from_str(metadata).unwrap_or_default();
-        let sid = meta["session_id"].as_str().unwrap_or("").to_string();
-        if sid.is_empty() || !seen.insert(sid.clone()) {
-            continue;
-        }
-        let project = meta["project"].as_str().unwrap_or("");
-        let meta_cwd = meta["cwd"].as_str().unwrap_or("").trim_start_matches('/');
-        if project != cwd_canonical && meta_cwd != cwd_canonical {
-            continue;
-        }
-        let title = body
-            .lines()
-            .find(|l| l.starts_with("[User]"))
-            .map(|l| l.strip_prefix("[User] ").unwrap_or(l))
-            .unwrap_or("")
-            .chars()
-            .take(80)
-            .collect::<String>();
-        sessions.push(BranchSession {
-            session_id: sid,
-            session_name: meta["session_name"].as_str().unwrap_or("").to_string(),
-            source: meta["source"].as_str().unwrap_or("claude").to_string(),
-            path: meta["path"].as_str().unwrap_or("").to_string(),
-            project: meta["project"].as_str().unwrap_or("").to_string(),
-            branch: meta["branch"].as_str().unwrap_or("").to_string(),
-            cwd: meta["cwd"].as_str().unwrap_or("").to_string(),
-            date: date.clone(),
-            title,
-        });
-    }
-    Ok(sessions)
-}
-
-fn resume_for_project(db_name: &PathBuf, assets: &PathBuf, cwd: &str) -> Result<()> {
-    let sessions = find_sessions_for_project(db_name, cwd)?;
-    pick_and_resume(sessions, &format!("in '{cwd}'"), db_name, assets, None)
 }
 
 fn format_date(iso: &str) -> String {
@@ -1551,7 +1485,6 @@ fn main() -> Result<()> {
     let mut since_ms: Option<i64> = None;
     let mut dump_session: Option<String> = None;
     let mut turns_range: Option<String> = None;
-    let mut do_resume = false;
     let mut query_args: Vec<&str> = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -1601,12 +1534,18 @@ fn main() -> Result<()> {
             "--turns" => {
                 turns_range = iter.next().cloned();
             }
-            "--resume" => {
-                do_resume = true;
-            }
             _ => {
                 query_args.push(arg);
             }
+        }
+    }
+
+    // Resolve `--branch .` to the current git branch
+    if branch_filter.as_deref() == Some(".") {
+        branch_filter = current_git_branch();
+        if branch_filter.is_none() {
+            eprintln!("error: --branch . used but not in a git repo");
+            std::process::exit(1);
         }
     }
 
@@ -1643,31 +1582,26 @@ fn main() -> Result<()> {
         }
     }
 
+    let has_branch = branch_filter.is_some();
+
     if let Some(ref sid) = dump_session {
         dump(&db_name, sid, turns_range.as_deref())?;
-    } else if do_resume {
-        // --resume: find sessions by branch (or by project dir if not in a git repo)
-        if let Some(ref br) = branch_filter {
-            resume_for_branch(&db_name, &assets, br)?;
-        } else if let Some(br) = current_git_branch() {
-            resume_for_branch(&db_name, &assets, &br)?;
-        } else {
-            // Not in a git repo — fall back to sessions for the current project directory
-            let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-            resume_for_project(&db_name, &assets, &cwd)?;
-        }
     } else if !query_args.is_empty() {
         let q = query_args.join(" ");
         if std::io::stdout().is_terminal() {
             if let Some(s) = search_tui(&db_name, &assets, &q, session_filter.as_deref(), branch_filter.as_deref(), &exclude_sessions, since_ms)? {
-                launch_resume(&s)?;
+                launch_resume(&s, has_branch)?;
             }
         } else {
             search_plain(&db_name, &assets, &q, session_filter.as_deref(), branch_filter.as_deref(), &exclude_sessions, since_ms)?;
         }
+    } else if let Some(ref br) = branch_filter {
+        // --branch without a query: show picker for sessions on this branch
+        let sessions = find_sessions_for_branch(&db_name, br)?;
+        pick_and_resume(sessions, &format!("on branch '{br}'"), &db_name, &assets, Some(br))?;
     } else {
-        eprintln!("Usage: pickbrain [--branch NAME] [--session UUID] [--exclude UUID,...] [--since 24h|7d|2w] <query>");
-        eprintln!("       pickbrain --resume [--branch NAME]");
+        eprintln!("Usage: pickbrain [--branch NAME|.] [--session UUID] [--exclude UUID,...] [--since 24h|7d|2w] <query>");
+        eprintln!("       pickbrain --branch NAME|.");
         eprintln!("       pickbrain --dump <UUID> [--turns N-M]");
         eprintln!("       pickbrain --nuke");
     }
