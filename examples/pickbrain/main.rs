@@ -930,6 +930,11 @@ fn main() -> Result<()> {
         }
     }
 
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        eprintln!("pickbrain {} — Copyright (c) 2026 Dropbox Inc.", env!("CARGO_PKG_VERSION"));
+    }
+
     let db_name = db_path();
     let assets = assets_path();
 
@@ -962,7 +967,6 @@ fn main() -> Result<()> {
         dump(&db_name, sid, turns_range.as_deref())?;
     } else if !query_args.is_empty() {
         let q = query_args.join(" ");
-        use std::io::IsTerminal;
         if std::io::stdout().is_terminal() {
             if let Some((sid, path, source)) = search_tui(&db_name, &assets, &q, session_filter.as_deref(), &exclude_sessions)? {
                 launch_resume(&sid, &path, &source)?;
