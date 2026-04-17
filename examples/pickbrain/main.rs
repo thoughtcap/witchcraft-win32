@@ -864,7 +864,8 @@ fn launch_resume(s: &BranchSession, checkout_branch: bool) -> Result<()> {
         let _ = std::env::set_current_dir(&dir);
     }
     let branch = &s.branch;
-    if checkout_branch && !branch.is_empty() {
+    use std::io::IsTerminal;
+    if checkout_branch && !branch.is_empty() && std::io::stderr().is_terminal() {
         let current = current_git_branch().unwrap_or_default();
         if current != *branch {
             if !git_working_tree_clean() {
@@ -873,13 +874,18 @@ fn launch_resume(s: &BranchSession, checkout_branch: bool) -> Result<()> {
                      (stash or commit before switching to '{branch}')"
                 );
             } else {
-                let status = std::process::Command::new("git")
-                    .args(["checkout", branch])
-                    .status();
-                match status {
-                    Ok(s) if s.success() => {}
-                    Ok(_) => eprintln!("warning: git checkout '{branch}' failed, continuing on '{current}'"),
-                    Err(e) => eprintln!("warning: git checkout failed: {e}"),
+                eprint!("Switch from '{current}' to '{branch}'? [y/N] ");
+                let mut answer = String::new();
+                std::io::stdin().read_line(&mut answer).ok();
+                if answer.trim().eq_ignore_ascii_case("y") {
+                    let status = std::process::Command::new("git")
+                        .args(["checkout", branch])
+                        .status();
+                    match status {
+                        Ok(s) if s.success() => {}
+                        Ok(_) => eprintln!("warning: git checkout '{branch}' failed, continuing on '{current}'"),
+                        Err(e) => eprintln!("warning: git checkout failed: {e}"),
+                    }
                 }
             }
         }
