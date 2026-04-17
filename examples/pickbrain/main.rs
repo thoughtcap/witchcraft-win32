@@ -1606,8 +1606,7 @@ fn main() -> Result<()> {
         let sessions = find_sessions_for_branch(&db_name, br)?;
         pick_and_resume(sessions, &format!("on branch '{br}'"), &db_name, &assets, Some(br))?;
     } else {
-        eprintln!("Usage: pickbrain [--branch NAME|.] [--session UUID] [--exclude UUID,...] [--since 24h|7d|2w] <query>");
-        eprintln!("       pickbrain --branch NAME|.");
+        eprintln!("Usage: pickbrain [--branch NAME|.] [--session UUID] [--exclude UUID,...] [--since 24h|7d|2w] [query]");
         eprintln!("       pickbrain --dump <UUID> [--turns N-M]");
         eprintln!("       pickbrain --nuke");
     }
