@@ -334,7 +334,7 @@ fn search_tui(
     branch: Option<&str>,
     exclude: &[String],
     since_ms: Option<i64>,
-) -> Result<Option<(String, String, String, String, String, String)>> {
+) -> Result<Option<BranchSession>> {
     let device = witchcraft::make_device();
     let embedder = witchcraft::Embedder::new(&device, assets)?;
     let db = DB::new_reader(db_name.clone()).unwrap();
@@ -367,8 +367,8 @@ fn search_tui(
     let mut list_state = ListState::default();
     list_state.select(Some(0));
     let mut scroll_offset: usize = 0;
-    let mut resume_session: Option<(String, String, String, String, String, String)> = None;
-    let mut confirm_resume: Option<(String, String, String, String, String, String)> = None;
+    let mut resume_session: Option<BranchSession> = None;
+    let mut confirm_resume: Option<BranchSession> = None;
     let mut searching = false;
     let mut search_filter = String::new();
     let mut saved_search: Option<(String, Vec<SearchResult>, u128)> = None;
@@ -447,15 +447,10 @@ fn search_tui(
 
             // Footer: resume confirmation
             if show_footer {
-                let cwd = confirm_resume.as_ref()
-                    .map(|(_, _, c, _, _, _)| c.as_str())
-                    .unwrap_or("?");
-                let sid = confirm_resume.as_ref()
-                    .map(|(s, _, _, _, _, _)| s.as_str())
-                    .unwrap_or("?");
-                let src = confirm_resume.as_ref()
-                    .map(|(_, _, _, s, _, _)| s.as_str())
-                    .unwrap_or("claude");
+                let cr = confirm_resume.as_ref().unwrap();
+                let cwd = if !cr.cwd.is_empty() { &cr.cwd } else { "?" };
+                let sid = &cr.session_id;
+                let src = &cr.source;
                 let footer = Paragraph::new(Line::from(vec![
                     Span::styled(
                         format!(" Exit pickbrain and resume {src} session {sid} in {cwd}? "),
@@ -785,14 +780,24 @@ fn search_tui(
                             r.cwd.clone()
                         } else {
                             read_cwd_from_jsonl(&r.path, &r.source)
-                                .unwrap_or_else(|| "?".to_string())
+                                .unwrap_or_default()
                         };
-                        confirm_resume = Some((r.session_id.clone(), r.path.clone(), cwd, r.source.clone(), r.branch.clone(), r.project.clone()));
+                        confirm_resume = Some(BranchSession {
+                            session_id: r.session_id.clone(),
+                            session_name: r.session_name.clone(),
+                            source: r.source.clone(),
+                            path: r.path.clone(),
+                            project: r.project.clone(),
+                            branch: r.branch.clone(),
+                            cwd,
+                            date: r.timestamp.clone(),
+                            title: String::new(),
+                        });
                     }
                 }
                 (View::Detail(_), KeyCode::Char('y') | KeyCode::Enter, _) => {
-                    if let Some((ref sid, ref _path, ref cwd, ref source, ref branch, ref project)) = confirm_resume {
-                        resume_session = Some((sid.clone(), source.clone(), branch.clone(), cwd.clone(), project.clone(), _path.clone()));
+                    if confirm_resume.is_some() {
+                        resume_session = confirm_resume.take();
                         break;
                     }
                 }
@@ -841,26 +846,27 @@ fn git_working_tree_clean() -> bool {
         .unwrap_or(false)
 }
 
-fn launch_resume(session_id: &str, source: &str, branch: &str, cwd: &str, project: &str) -> Result<()> {
+fn launch_resume(s: &BranchSession) -> Result<()> {
     use std::os::unix::process::CommandExt;
     // cwd is the authoritative path; project (leading / stripped) is the fallback
     // for sessions ingested before cwd was added to metadata.
-    let dir = if !cwd.is_empty() {
-        cwd.to_string()
-    } else if !project.is_empty() && !project.contains('/') {
+    let dir = if !s.cwd.is_empty() {
+        s.cwd.clone()
+    } else if !s.project.is_empty() && !s.project.contains('/') {
         // Bare directory name (e.g. codex "server") — not resolvable
         String::new()
-    } else if !project.is_empty() {
-        format!("/{project}")
+    } else if !s.project.is_empty() {
+        format!("/{}", s.project)
     } else {
         String::new()
     };
     if !dir.is_empty() {
         let _ = std::env::set_current_dir(&dir);
     }
+    let branch = &s.branch;
     if !branch.is_empty() {
         let current = current_git_branch().unwrap_or_default();
-        if current != branch {
+        if current != *branch {
             if !git_working_tree_clean() {
                 eprintln!(
                     "warning: working tree is dirty, staying on '{current}' \
@@ -878,7 +884,8 @@ fn launch_resume(session_id: &str, source: &str, branch: &str, cwd: &str, projec
             }
         }
     }
-    if source == "codex" {
+    let session_id = &s.session_id;
+    if s.source == "codex" {
         eprintln!("Resuming codex session {session_id}...");
         let err = std::process::Command::new("codex")
             .args(["resume", session_id])
@@ -1166,7 +1173,7 @@ fn pick_and_resume(
         if !std::path::Path::new(&s.path).exists() {
             anyhow::bail!("session file no longer exists: {}", s.path);
         }
-        launch_resume(&s.session_id, &s.source, &s.branch, &s.cwd, &s.project)?;
+        launch_resume(s)?;
         return Ok(());
     }
 
@@ -1374,7 +1381,7 @@ fn pick_and_resume(
         if !std::path::Path::new(&s.path).exists() {
             anyhow::bail!("session file no longer exists: {}", s.path);
         }
-        launch_resume(&s.session_id, &s.source, &s.branch, &s.cwd, &s.project)?;
+        launch_resume(s)?;
     }
     Ok(())
 }
@@ -1652,8 +1659,8 @@ fn main() -> Result<()> {
     } else if !query_args.is_empty() {
         let q = query_args.join(" ");
         if std::io::stdout().is_terminal() {
-            if let Some((sid, source, branch, cwd, project, _path)) = search_tui(&db_name, &assets, &q, session_filter.as_deref(), branch_filter.as_deref(), &exclude_sessions, since_ms)? {
-                launch_resume(&sid, &source, &branch, &cwd, &project)?;
+            if let Some(s) = search_tui(&db_name, &assets, &q, session_filter.as_deref(), branch_filter.as_deref(), &exclude_sessions, since_ms)? {
+                launch_resume(&s)?;
             }
         } else {
             search_plain(&db_name, &assets, &q, session_filter.as_deref(), branch_filter.as_deref(), &exclude_sessions, since_ms)?;
