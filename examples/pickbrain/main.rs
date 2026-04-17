@@ -672,7 +672,7 @@ fn search_tui(
                         searching = false;
                         saved_search = None;
                         view = View::List;
-                        // Fall through to normal arrow key handling below
+                        continue;
                     }
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
                     (KeyCode::Backspace, _) => {
@@ -1357,7 +1357,7 @@ fn pick_and_resume(
                     }
                     (KeyCode::Down, _) | (KeyCode::Up, _) => {
                         searching = false;
-                        // Fall through to normal arrow key handling below
+                        continue;
                     }
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
                     (KeyCode::Backspace, _) => {
