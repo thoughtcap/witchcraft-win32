@@ -17,7 +17,7 @@ echo
 # Check prerequisites
 if [ ! -f "$WARP_CLI" ]; then
     echo "Error: warp-cli not found at $WARP_CLI"
-    echo "Build with: cargo build --release --features t5-quantized,metal,accelerate --bin warp-cli"
+    echo "Build with: make warp-cli"
     exit 1
 fi
 
