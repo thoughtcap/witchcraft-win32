@@ -400,7 +400,7 @@ fn search_tui(
 
             // Header
             let help_text = if searching {
-                "type to search  esc done"
+                "type to search  ⏎ done  esc undo"
             } else {
                 match view {
                     View::List => "↑↓/jk navigate  ⏎ open  / search  q quit",
@@ -650,7 +650,20 @@ fn search_tui(
             // Search mode: live-search as the user types
             if searching {
                 match (key.code, key.modifiers) {
-                    (KeyCode::Esc, _) | (KeyCode::Enter, _) => {
+                    (KeyCode::Esc, _) => {
+                        searching = false;
+                        search_filter.clear();
+                        if let Some((q, r, ms)) = saved_search.take() {
+                            active_query = q;
+                            results = r;
+                            search_ms = ms;
+                            selected = 0;
+                            detail_cache = None;
+                            view = View::List;
+                        }
+                        continue;
+                    }
+                    (KeyCode::Enter, _) => {
                         searching = false;
                         saved_search = None;
                         continue;
@@ -1257,7 +1270,7 @@ fn pick_and_resume(
                 format!("{} results", active_sessions.len())
             };
             let help_text = if searching {
-                "type to search  esc done"
+                "type to search  ⏎ done  esc undo"
             } else {
                 "↑↓/jk navigate  ⏎ resume  / filter  q quit"
             };
@@ -1331,7 +1344,14 @@ fn pick_and_resume(
             // Search mode: live-search as the user types
             if searching {
                 match (key.code, key.modifiers) {
-                    (KeyCode::Esc, _) | (KeyCode::Enter, _) => {
+                    (KeyCode::Esc, _) => {
+                        searching = false;
+                        query.clear();
+                        active_sessions = sessions.clone();
+                        selected = 0;
+                        continue;
+                    }
+                    (KeyCode::Enter, _) => {
                         searching = false;
                         continue;
                     }
