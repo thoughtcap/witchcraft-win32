@@ -97,6 +97,7 @@ module:
 	cargo build --release --target aarch64-apple-darwin --features t5-quantized,metal,napi
 	cargo build --release --target x86_64-apple-darwin --features t5-quantized,fbgemm,hybrid-dequant,napi
 	lipo -create target/aarch64-apple-darwin/release/libwitchcraft.dylib target/x86_64-apple-darwin/release/libwitchcraft.dylib -output target/release/warp-macos-universal.node
+	ln -sf target/release/warp-macos-universal.node warp.node
 
 test: download
 	RUST_LOG=debug cargo llvm-cov nextest --release --features napi,$(CLI_FEATURES) --lcov --output-path lcov.info

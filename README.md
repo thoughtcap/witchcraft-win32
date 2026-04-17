@@ -90,16 +90,15 @@ When building, exactly one T5 backend must be enabled:
 
 Other flags:
 - `metal` -- macOS GPU acceleration (Apple Silicon only)
-- `accelerate` -- macOS BLAS via Accelerate framework
 - `fbgemm` -- fbgemm-rs packed GEMM (bf16 weights, faster on x86)
 - `hybrid-dequant` -- F32 attention + Q4K FFN with fused gated-gelu (x86, requires `fbgemm`)
 - `napi` -- Node.js native module via napi-rs
 - `embed-assets` -- bake weights into binary
 - `progress` -- progress bars for CLI
 
-Platform-specific recommended features:
-- **Apple Silicon**: `t5-quantized,metal,accelerate`
-- **Intel Mac (x86_64)**: `t5-quantized,accelerate,hybrid-dequant,fbgemm`
+Platform-specific recommended features (these are what `make` uses automatically):
+- **Apple Silicon**: `t5-quantized,metal`
+- **Intel Mac (x86_64)**: `t5-quantized,fbgemm,hybrid-dequant`
 - **Intel Windows (x86_64)**: `t5-openvino,fbgemm`
 
 ## Using as Node module ##
@@ -107,8 +106,22 @@ Platform-specific recommended features:
 ```
 make module
 ```
-Builds target/release/warp.node. Which loads the compressed weights from the
-"assets" dir.
+Builds a universal macOS binary at `target/release/warp-macos-universal.node`
+(lipo'd from aarch64 + x86_64 builds with platform-appropriate features).
+
+To use in another project:
+
+```
+cd /path/to/your-project
+npm install /path/to/witchcraft
+```
+
+Then in JavaScript:
+
+```js
+const { Witchcraft } = require('warp');
+const wc = new Witchcraft('/path/to/db.sqlite', '/path/to/assets');
+```
 
 ## Unit tests and Code Coverage
 

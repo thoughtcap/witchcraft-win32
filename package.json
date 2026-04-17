@@ -5,11 +5,12 @@
   "main": "index.cjs",
   "files": [
     "index.cjs",
+    "install.cjs",
     "warp.node",
     "assets/LICENSE.txt",
-    "assets/config.json.zst",
-    "assets/tokenizer.json.zst",
-    "assets/xtr.gguf.zst"
+    "assets/config.json",
+    "assets/tokenizer.json",
+    "assets/xtr.gguf"
   ],
   "packageManager": "yarn@4.9.2",
   "scripts": {
