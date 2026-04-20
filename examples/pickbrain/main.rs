@@ -35,7 +35,19 @@ fn db_path() -> PathBuf {
 }
 
 fn assets_path() -> PathBuf {
-    PathBuf::from(env::var("WARP_ASSETS").unwrap_or_else(|_| "assets".into()))
+    if let Ok(p) = env::var("WARP_ASSETS") {
+        return PathBuf::from(p);
+    }
+    // Installed location — populated by `make pickbrain-install`. OpenVINO loads
+    // xtr-ov-int4.{xml,bin} via file paths, so assets must be on disk at a stable
+    // location independent of CWD.
+    if let Ok(home) = env::var("HOME") {
+        let installed = PathBuf::from(home).join(".pickbrain/assets");
+        if installed.join("xtr-ov-int4.xml").exists() {
+            return installed;
+        }
+    }
+    PathBuf::from("assets")
 }
 
 /// Walk up the process tree to find the calling Claude Code session ID.
@@ -82,7 +94,40 @@ fn get_ppid(pid: i32) -> Option<i32> {
     if ppid > 0 { Some(ppid) } else { None }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn get_ppid(pid: i32) -> Option<i32> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32,
+        TH32CS_SNAPPROCESS,
+    };
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut entry: PROCESSENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
+
+        let mut ppid = None;
+        if Process32First(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.th32ProcessID as i32 == pid {
+                    let p = entry.th32ParentProcessID as i32;
+                    if p > 0 {
+                        ppid = Some(p);
+                    }
+                    break;
+                }
+                if Process32Next(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+        ppid
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn get_ppid(_pid: i32) -> Option<i32> {
     None
 }
@@ -217,15 +262,13 @@ fn parse_since(s: &str) -> Option<i64> {
 
 fn run_search(
     db_name: &PathBuf,
-    assets: &PathBuf,
+    embedder: &witchcraft::Embedder,
     q: &str,
     session: Option<&str>,
     exclude: &[String],
     since_ms: Option<i64>,
 ) -> Result<(Vec<SearchResult>, u128)> {
     use witchcraft::types::*;
-    let device = witchcraft::make_device();
-    let embedder = witchcraft::Embedder::new(&device, assets)?;
 
     let mut cache = witchcraft::EmbeddingsCache::new(1);
     let db = DB::new_reader(db_name.clone()).unwrap();
@@ -303,7 +346,7 @@ fn run_search(
     let now = std::time::Instant::now();
     let results = witchcraft::search(
         &db,
-        &embedder,
+        embedder,
         &mut cache,
         q,
         0.5,
@@ -357,13 +400,13 @@ enum View {
 
 fn search_tui(
     db_name: &PathBuf,
-    assets: &PathBuf,
+    embedder: &witchcraft::Embedder,
     q: &str,
     session: Option<&str>,
     exclude: &[String],
     since_ms: Option<i64>,
 ) -> Result<Option<(String, String, String)>> {
-    let (results, search_ms) = run_search(db_name, assets, q, session, exclude, since_ms)?;
+    let (results, search_ms) = run_search(db_name, embedder, q, session, exclude, since_ms)?;
     if results.is_empty() {
         eprintln!("no results");
         return Ok(None);
@@ -651,6 +694,7 @@ fn search_tui(
                 }
                 (View::List, KeyCode::Char('q') | KeyCode::Esc, _) => break,
                 (_, KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+                #[cfg(unix)]
                 (_, KeyCode::Char('z'), KeyModifiers::CONTROL) => {
                     disable_raw_mode()?;
                     crossterm::execute!(
@@ -771,22 +815,28 @@ fn read_cwd_from_jsonl(path: &str, source: &str) -> Option<String> {
 }
 
 fn launch_resume(session_id: &str, jsonl_path: &str, source: &str) -> Result<()> {
-    use std::os::unix::process::CommandExt;
     if let Some(cwd) = read_cwd_from_jsonl(jsonl_path, source) {
         let _ = std::env::set_current_dir(&cwd);
     }
-    if source == "codex" {
+    let (prog, args): (&str, [&str; 2]) = if source == "codex" {
         eprintln!("Resuming codex session {session_id}...");
-        let err = std::process::Command::new("codex")
-            .args(["resume", session_id])
-            .exec();
-        Err(err.into())
+        ("codex", ["resume", session_id])
     } else {
         eprintln!("Resuming claude session {session_id}...");
-        let err = std::process::Command::new("claude")
-            .args(["--resume", session_id])
-            .exec();
+        ("claude", ["--resume", session_id])
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(prog).args(args).exec();
         Err(err.into())
+    }
+    // Windows has no exec(); spawn-and-wait, then forward the child's exit code.
+    #[cfg(not(unix))]
+    {
+        let status = std::process::Command::new(prog).args(args).status()?;
+        std::process::exit(status.code().unwrap_or(1));
     }
 }
 
@@ -817,13 +867,13 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn search_plain(
     db_name: &PathBuf,
-    assets: &PathBuf,
+    embedder: &witchcraft::Embedder,
     q: &str,
     session: Option<&str>,
     exclude: &[String],
     since_ms: Option<i64>,
 ) -> Result<()> {
-    let (results, search_ms) = run_search(db_name, assets, q, session, exclude, since_ms)?;
+    let (results, search_ms) = run_search(db_name, embedder, q, session, exclude, since_ms)?;
 
     let mut buf = Vec::new();
     writeln!(buf, "\n[[ {q} ]]")?;
@@ -1089,31 +1139,41 @@ fn main() -> Result<()> {
     // Skip the active session's JSONL if its watermark is fresh (<10 min).
     // If we can't detect the active session, nothing is skipped (eager by default).
     let stale_ms = 10 * 60 * 1000;
-    match ingest(&db_name, active_session.as_deref(), stale_ms) {
-        Ok(have_changes) => {
-            if have_changes {
-                let db_rw = DB::new(db_name.clone()).unwrap();
-                let device = witchcraft::make_device();
-                let embedder = witchcraft::Embedder::new(&device, &assets)?;
-                embed_and_index(&db_rw, &embedder, &device)?;
-            }
-        },
+    let have_changes = match ingest(&db_name, active_session.as_deref(), stale_ms) {
+        Ok(changed) => changed,
         Err(e) => {
             eprintln!("warning: ingest failed: {e}");
             std::process::exit(1);
         }
+    };
+
+    // One Embedder per process: OpenVINO 2026 on Windows wedges on the second
+    // Core::read_model_from_file after a prior Core is dropped.
+    let embedder_device = if have_changes || !query_args.is_empty() {
+        let device = witchcraft::make_device();
+        let embedder = witchcraft::Embedder::new(&device, &assets)?;
+        Some((embedder, device))
+    } else {
+        None
+    };
+
+    if have_changes {
+        let db_rw = DB::new(db_name.clone()).unwrap();
+        let (embedder, device) = embedder_device.as_ref().unwrap();
+        embed_and_index(&db_rw, embedder, device)?;
     }
 
     if let Some(ref sid) = dump_session {
         dump(&db_name, sid, turns_range.as_deref())?;
     } else if !query_args.is_empty() {
         let q = query_args.join(" ");
+        let (embedder, _) = embedder_device.as_ref().unwrap();
         if std::io::stdout().is_terminal() {
-            if let Some((sid, path, source)) = search_tui(&db_name, &assets, &q, session_filter.as_deref(), &exclude_sessions, since_ms)? {
+            if let Some((sid, path, source)) = search_tui(&db_name, embedder, &q, session_filter.as_deref(), &exclude_sessions, since_ms)? {
                 launch_resume(&sid, &path, &source)?;
             }
         } else {
-            search_plain(&db_name, &assets, &q, session_filter.as_deref(), &exclude_sessions, since_ms)?;
+            search_plain(&db_name, embedder, &q, session_filter.as_deref(), &exclude_sessions, since_ms)?;
         }
     } else {
         eprintln!("Usage: pickbrain [options] <query>");

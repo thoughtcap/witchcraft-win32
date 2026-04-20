@@ -74,7 +74,7 @@ libc = { version = "0.2.147", optional = true }
 
 # Windows - priority management
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = ["Win32_System_Threading"] }
+windows = { version = "0.58", features = ["Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_Foundation"] }
 
 [build-dependencies]
 napi-build = "2.2.3"
