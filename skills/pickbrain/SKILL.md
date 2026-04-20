@@ -13,12 +13,10 @@ Search past Claude Code conversations, memory files, and authored files using se
 Build and install from the repo root:
 
 ```bash
-make pickbrain
-# then copy or symlink the binary to somewhere on your PATH:
-ln -sf "$(pwd)/pickbrain" ~/bin/pickbrain
+make pickbrain-install
 ```
 
-The binary embeds its own model weights (`embed-assets` feature), so no separate assets directory is needed.
+This builds the binary, hardlinks it to `~/bin/pickbrain`, and (on Windows) copies the OpenVINO model files to `~/.pickbrain/assets/`. Small assets (tokenizer, config) are embedded in the binary via the `embed-assets` feature; the OpenVINO model is loaded from disk because it's accessed via file path, not byte buffer. Override the asset location with `WARP_ASSETS=<dir>` if needed.
 
 ## Usage
 
@@ -83,4 +81,4 @@ pickbrain --since 2w "<query>"
 - First run requires a full ingest+embed pass (~7s). Subsequent searches auto-ingest incrementally.
 - The database lives at `~/.pickbrain/pickbrain.db`.
 - Results are ranked by semantic similarity — they may not contain the exact query words.
-- The active session's JSONL is skipped during ingest if it was indexed less than 10 minutes ago. If the active session can't be detected (e.g. on Windows), everything is ingested eagerly.
+- The active session's JSONL is skipped during ingest if it was indexed less than 10 minutes ago. If the active session can't be detected, everything is ingested eagerly.
